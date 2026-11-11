@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.environment.mapper.EnvironmentMapper">
+    <sql id="columns">
+        id, environment_code AS environmentCode, environment_name AS environmentName,
+        environment_type AS environmentType, base_url AS baseUrl, api_base_url AS apiBaseUrl,
+        auth_type AS authType, credential_ref AS credentialRef,
+        CAST(config_json AS CHAR) AS configJson, description,
+        is_active AS active, sort_order AS sortOrder,
+        created_at AS createdAt, updated_at AS updatedAt
+    </sql>
+    <select id="selectList" resultType="com.devprocess.manager.environment.dto.EnvironmentDTO">
+        SELECT <include refid="columns"/>
+        FROM dpm_environment
+        <where>
+            <if test="activeOnly != null and activeOnly">AND is_active = 1</if>
+        </where>
+        ORDER BY sort_order, id
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.environment.dto.EnvironmentDTO">
+        SELECT <include refid="columns"/> FROM dpm_environment WHERE id = #{id}
+    </select>
+    <select id="selectByIdForUpdate" resultType="com.devprocess.manager.environment.dto.EnvironmentDTO">
+        SELECT <include refid="columns"/> FROM dpm_environment WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="countByCode" resultType="int">
+        SELECT COUNT(1) FROM dpm_environment WHERE environment_code = #{code}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_environment
+        (environment_code, environment_name, environment_type, base_url, api_base_url,
+         auth_type, credential_ref, config_json, description, is_active, sort_order)
+        VALUES
+        (#{environmentCode}, #{environmentName}, #{environmentType}, #{baseUrl}, #{apiBaseUrl},
+         #{authType}, #{credentialRef},
+         <choose>
+             <when test="configJson != null and configJson != ''">CAST(#{configJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         #{description}, #{active}, #{sortOrder})
+    </insert>
+    <update id="update">
+        UPDATE dpm_environment
+        SET environment_code = #{request.environmentCode},
+            environment_name = #{request.environmentName},
+            environment_type = #{request.environmentType},
+            base_url = #{request.baseUrl},
+            api_base_url = #{request.apiBaseUrl},
+            auth_type = #{request.authType},
+            credential_ref = #{request.credentialRef},
+            config_json = <choose>
+                <when test="request.configJson != null and request.configJson != ''">CAST(#{request.configJson} AS JSON)</when>
+                <otherwise>NULL</otherwise>
+            </choose>,
+            description = #{request.description},
+            is_active = #{request.active},
+            sort_order = #{request.sortOrder}
+        WHERE id = #{id}
+    </update>
+</mapper>

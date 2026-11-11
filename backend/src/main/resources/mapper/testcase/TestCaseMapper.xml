@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.testcase.mapper.TestCaseMapper">
+    <sql id="whereClause">
+        <where>
+            <if test="status != null and status != ''">AND c.status = #{status}</if>
+            <if test="testType != null and testType != ''">AND cr.test_type = #{testType}</if>
+            <if test="priority != null and priority != ''">AND cr.priority = #{priority}</if>
+            <if test="executionMode != null and executionMode != ''">AND cr.execution_mode = #{executionMode}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (c.case_no LIKE CONCAT('%', #{keyword}, '%')
+                  OR c.title LIKE CONCAT('%', #{keyword}, '%')
+                  OR c.owner_name LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+    <sql id="selectCaseColumns">
+        c.id, c.case_no, c.title, c.status, c.current_revision_no,
+        c.owner_name, c.created_at, c.updated_at,
+        cr.id AS current_revision_id, cr.revision_no, cr.preconditions, cr.expected_result, cr.test_type,
+        cr.priority, cr.execution_mode, cr.script_id, s.script_name,
+        (SELECT COUNT(1) FROM dpm_requirement_case rc WHERE rc.test_case_id = c.id)
+            AS requirement_count
+    </sql>
+    <select id="selectPage" resultType="com.devprocess.manager.testcase.dto.TestCaseDTO">
+        SELECT <include refid="selectCaseColumns"/>
+        FROM dpm_test_case c
+        LEFT JOIN dpm_test_case_revision cr
+            ON cr.test_case_id = c.id AND cr.revision_no = c.current_revision_no
+        LEFT JOIN dpm_test_script s ON s.id = cr.script_id
+        <include refid="whereClause"/>
+        ORDER BY c.updated_at DESC, c.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_test_case c
+        LEFT JOIN dpm_test_case_revision cr
+            ON cr.test_case_id = c.id AND cr.revision_no = c.current_revision_no
+        <include refid="whereClause"/>
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.testcase.dto.TestCaseDTO">
+        SELECT <include refid="selectCaseColumns"/>
+        FROM dpm_test_case c
+        LEFT JOIN dpm_test_case_revision cr
+            ON cr.test_case_id = c.id AND cr.revision_no = c.current_revision_no
+        LEFT JOIN dpm_test_script s ON s.id = cr.script_id
+        WHERE c.id = #{id}
+    </select>
+    <select id="selectByIdForUpdate" resultType="com.devprocess.manager.testcase.dto.TestCaseDTO">
+        SELECT id, case_no, title, status, current_revision_no, owner_name
+        FROM dpm_test_case WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="countByCaseNo" resultType="int">
+        SELECT COUNT(1) FROM dpm_test_case
+        WHERE case_no = #{caseNo}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+    <insert id="insertMain" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_test_case (case_no, title, status, current_revision_no, owner_name)
+        VALUES (#{caseNo}, #{title}, #{status}, 1, #{ownerName})
+    </insert>
+    <update id="updateMain">
+        UPDATE dpm_test_case
+        SET case_no = #{request.caseNo},
+            title = #{request.title},
+            status = #{request.status},
+            current_revision_no = #{revisionNo},
+            owner_name = #{request.ownerName},
+            updated_by = #{request.createdBy}
+        WHERE id = #{id}
+    </update>
+    <insert id="insertRevision">
+        INSERT INTO dpm_test_case_revision
+        (test_case_id, revision_no, preconditions, steps_json, expected_result,
+         test_type, priority, execution_mode, script_id, script_revision_id, ai_instruction,
+         test_data_json, change_note, created_by)
+        VALUES
+        (#{caseId}, #{revisionNo}, #{request.preconditions}, CAST(#{stepsJson} AS JSON),
+         #{request.expectedResult}, #{request.testType}, #{request.priority},
+         #{request.executionMode}, #{request.scriptId},
+         (SELECT current_revision_id FROM dpm_test_script WHERE id = #{request.scriptId}),
+         #{request.aiInstruction},
+         <choose>
+             <when test="request.testDataJson != null and request.testDataJson != ''">
+                 CAST(#{request.testDataJson} AS JSON)
+             </when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         #{request.changeNote}, #{request.createdBy})
+    </insert>
+    <select id="selectRevisions" resultType="com.devprocess.manager.testcase.dto.TestCaseRevisionDTO">
+        SELECT cr.id, cr.test_case_id, cr.revision_no, cr.preconditions,
+               CAST(cr.steps_json AS CHAR) AS steps_json,
+               cr.expected_result, cr.test_type, cr.priority, cr.execution_mode,
+               cr.script_id, cr.script_revision_id, sr.script_version,
+               cr.ai_instruction, CAST(cr.test_data_json AS CHAR) AS test_data_json,
+               cr.change_note, cr.created_by, cr.created_at
+        FROM dpm_test_case_revision cr
+        LEFT JOIN dpm_test_script_revision sr ON sr.id = cr.script_revision_id
+        WHERE cr.test_case_id = #{caseId}
+        ORDER BY cr.revision_no DESC
+    </select>
+    <select id="selectRevisionById" resultType="com.devprocess.manager.testcase.dto.TestCaseRevisionDTO">
+        SELECT cr.id, cr.test_case_id, cr.revision_no, cr.preconditions,
+               CAST(cr.steps_json AS CHAR) AS steps_json,
+               cr.expected_result, cr.test_type, cr.priority, cr.execution_mode,
+               cr.script_id, cr.script_revision_id, sr.script_version,
+               cr.ai_instruction, CAST(cr.test_data_json AS CHAR) AS test_data_json,
+               cr.change_note, cr.created_by, cr.created_at
+        FROM dpm_test_case_revision cr
+        LEFT JOIN dpm_test_script_revision sr ON sr.id = cr.script_revision_id
+        WHERE cr.test_case_id = #{caseId} AND cr.id = #{revisionId}
+    </select>
+    <select id="selectRequirementsByCase" resultType="com.devprocess.manager.testcase.dto.TestCaseRequirementDTO">
+        SELECT r.id AS requirement_id, r.requirement_no, r.title,
+               p.project_code, p.project_name, v.version_no, rc.coverage_type
+        FROM dpm_requirement_case rc
+        INNER JOIN dpm_requirement r ON r.id = rc.requirement_id
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        WHERE rc.test_case_id = #{caseId}
+        ORDER BY p.project_code, v.version_no, r.sort_order, r.requirement_no
+    </select>
+    <select id="selectAvailableRequirements" resultType="com.devprocess.manager.testcase.dto.TestCaseRequirementDTO">
+        SELECT r.id AS requirement_id, r.requirement_no, r.title,
+               p.project_code, p.project_name, v.version_no
+        FROM dpm_requirement r
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        WHERE 1 = 1
+        <if test="versionId != null">AND r.version_id = #{versionId}</if>
+        ORDER BY p.project_code, v.version_no, r.sort_order, r.requirement_no
+    </select>
+    <select id="countRequirementsByIds" resultType="int">
+        SELECT COUNT(DISTINCT id) FROM dpm_requirement
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+    <delete id="deleteRequirementsByCase">
+        DELETE FROM dpm_requirement_case WHERE test_case_id = #{caseId}
+    </delete>
+    <insert id="insertRequirementCase">
+        INSERT INTO dpm_requirement_case (requirement_id, test_case_id)
+        VALUES (#{requirementId}, #{caseId})
+    </insert>
+    <select id="selectEnabledScripts" resultType="com.devprocess.manager.testscript.dto.TestScriptDTO">
+        SELECT s.id, s.script_code AS scriptCode, s.script_name AS scriptName,
+               s.enabled, s.current_revision_id AS currentRevisionId,
+               r.script_language AS scriptLanguage, r.runtime_version AS runtimeVersion,
+               r.script_version AS scriptVersion, r.source_type AS sourceType,
+               r.source_path AS sourcePath, r.entry_point AS entryPoint,
+               CAST(r.arguments_json AS CHAR) AS argumentsJson
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        WHERE s.enabled = 1
+        ORDER BY s.script_name, s.id
+    </select>
+    <select id="selectEnabledScriptByIdForUpdate"
+            resultType="com.devprocess.manager.testscript.dto.TestScriptDTO">
+        SELECT s.id, s.script_code AS scriptCode, s.script_name AS scriptName,
+               s.enabled, s.current_revision_id AS currentRevisionId,
+               r.script_language AS scriptLanguage, r.runtime_version AS runtimeVersion,
+               r.script_version AS scriptVersion, r.source_type AS sourceType,
+               r.source_path AS sourcePath, r.entry_point AS entryPoint,
+               CAST(r.arguments_json AS CHAR) AS argumentsJson
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        WHERE s.id = #{id} AND s.enabled = 1
+        FOR UPDATE
+    </select>
+</mapper>

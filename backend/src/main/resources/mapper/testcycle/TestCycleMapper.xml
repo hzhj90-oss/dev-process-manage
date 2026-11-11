@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.testcycle.mapper.TestCycleMapper">
+    <sql id="summaryColumns">
+        tc.id, tc.version_id AS versionId, tc.cycle_no AS cycleNo,
+        tc.cycle_name AS cycleName, tc.cycle_stage AS cycleStage,
+        tc.environment_id AS environmentId, tc.code_version AS codeVersion,
+        tc.git_branch AS gitBranch, tc.git_commit AS gitCommit, tc.build_no AS buildNo,
+        tc.status, tc.started_at AS startedAt, tc.completed_at AS completedAt,
+        tc.created_at AS createdAt, v.version_no AS versionNo,
+        p.project_code AS projectCode, p.project_name AS projectName,
+        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentCode')),
+            e.environment_code) AS environmentCode,
+        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentName')),
+            e.environment_name) AS environmentName,
+        IFNULL(stats.caseCount, 0) AS caseCount, IFNULL(stats.passCount, 0) AS passCount,
+        IFNULL(stats.failCount, 0) AS failCount, IFNULL(stats.blockedCount, 0) AS blockedCount,
+        IFNULL(stats.skippedCount, 0) AS skippedCount, IFNULL(stats.notRunCount, 0) AS notRunCount
+    </sql>
+    <sql id="cycleJoins">
+        FROM dpm_test_cycle tc
+        INNER JOIN dpm_version v ON v.id = tc.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        INNER JOIN dpm_environment e ON e.id = tc.environment_id
+        LEFT JOIN (
+            SELECT cycle_id, COUNT(1) AS caseCount,
+                SUM(latest_result = 'PASS') AS passCount,
+                SUM(latest_result = 'FAIL') AS failCount,
+                SUM(latest_result = 'BLOCKED') AS blockedCount,
+                SUM(latest_result = 'SKIPPED') AS skippedCount,
+                SUM(latest_result = 'NOT_RUN') AS notRunCount
+            FROM dpm_cycle_case GROUP BY cycle_id
+        ) stats ON stats.cycle_id = tc.id
+    </sql>
+    <sql id="filterClause">
+        <where>
+            <if test="versionId != null">AND tc.version_id = #{versionId}</if>
+            <if test="environmentId != null">AND tc.environment_id = #{environmentId}</if>
+            <if test="status != null and status != ''">AND tc.status = #{status}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (tc.cycle_name LIKE CONCAT('%', #{keyword}, '%')
+                  OR tc.code_version LIKE CONCAT('%', #{keyword}, '%')
+                  OR v.version_no LIKE CONCAT('%', #{keyword}, '%')
+                  OR p.project_name LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+    <select id="selectPage" resultType="com.devprocess.manager.testcycle.dto.TestCycleSummaryDTO">
+        SELECT <include refid="summaryColumns"/>
+        <include refid="cycleJoins"/>
+        <include refid="filterClause"/>
+        ORDER BY tc.created_at DESC, tc.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_test_cycle tc
+        INNER JOIN dpm_version v ON v.id = tc.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        <include refid="filterClause"/>
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.testcycle.dto.TestCycleDTO">
+        SELECT <include refid="summaryColumns"/>,
+               CAST(tc.environment_snapshot AS CHAR) AS environmentSnapshotJson,
+               CAST(tc.scope_json AS CHAR) AS scopeJson,
+               tc.description, tc.created_by AS createdBy
+        <include refid="cycleJoins"/>
+        WHERE tc.id = #{id}
+    </select>
+    <select id="selectCycleForUpdate" resultType="map">
+        SELECT id, version_id AS versionId, status
+        FROM dpm_test_cycle WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="selectVersionIdForUpdate" resultType="long">
+        SELECT id FROM dpm_version WHERE id = #{versionId} FOR UPDATE
+    </select>
+    <select id="selectEnvironmentForUpdate" resultType="map">
+        SELECT id, environment_code AS environmentCode, environment_name AS environmentName,
+               environment_type AS environmentType, base_url AS baseUrl,
+               api_base_url AS apiBaseUrl, auth_type AS authType,
+               credential_ref AS credentialRef, is_active AS active
+        FROM dpm_environment WHERE id = #{environmentId} FOR UPDATE
+    </select>
+    <select id="selectNextCycleNo" resultType="int">
+        SELECT COALESCE(MAX(cycle_no), 0) + 1
+        FROM dpm_test_cycle WHERE version_id = #{versionId}
+    </select>
+    <insert id="insertCycle" useGeneratedKeys="true" keyProperty="request.id">
+        INSERT INTO dpm_test_cycle
+        (version_id, cycle_no, cycle_name, cycle_stage, environment_id, environment_snapshot,
+         code_version, git_branch, git_commit, build_no, scope_json, status, description, created_by)
+        VALUES
+        (#{request.versionId}, #{cycleNo}, #{request.cycleName}, #{request.cycleStage},
+         #{request.environmentId}, CAST(#{environmentSnapshotJson} AS JSON),
+         #{request.codeVersion}, #{request.gitBranch}, #{request.gitCommit}, #{request.buildNo},
+         <choose>
+             <when test="scopeJson != null and scopeJson != ''">CAST(#{scopeJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         'PLANNED', #{request.description}, #{request.createdBy})
+    </insert>
+    <update id="updateCycle">
+        UPDATE dpm_test_cycle
+        SET cycle_name = #{request.cycleName},
+            cycle_stage = #{request.cycleStage},
+            environment_id = #{request.environmentId},
+            environment_snapshot = CAST(#{environmentSnapshotJson} AS JSON),
+            code_version = #{request.codeVersion},
+            git_branch = #{request.gitBranch},
+            git_commit = #{request.gitCommit},
+            build_no = #{request.buildNo},
+            scope_json = <choose>
+                <when test="scopeJson != null and scopeJson != ''">CAST(#{scopeJson} AS JSON)</when>
+                <otherwise>NULL</otherwise>
+            </choose>,
+            description = #{request.description}
+        WHERE id = #{id}
+    </update>
+    <select id="selectCaseCount" resultType="int">
+        SELECT COUNT(1) FROM dpm_cycle_case WHERE cycle_id = #{cycleId}
+    </select>
+    <select id="selectNextCaseSequence" resultType="int">
+        SELECT COALESCE(MAX(sequence_no), -1) + 1
+        FROM dpm_cycle_case WHERE cycle_id = #{cycleId}
+    </select>
+    <select id="countCycleCase" resultType="int">
+        SELECT COUNT(1) FROM dpm_cycle_case
+        WHERE cycle_id = #{cycleId} AND test_case_id = #{caseId}
+    </select>
+    <select id="selectCycleCaseId" resultType="long">
+        SELECT id FROM dpm_cycle_case
+        WHERE cycle_id = #{cycleId} AND test_case_id = #{caseId}
+    </select>
+    <insert id="insertCycleCase">
+        INSERT INTO dpm_cycle_case
+        (cycle_id, test_case_id, test_case_revision_id, case_snapshot, execution_mode, sequence_no)
+        VALUES
+        (#{cycleId}, #{caseId}, #{revisionId}, CAST(#{snapshotJson} AS JSON),
+         #{executionMode}, #{sequenceNo})
+    </insert>
+    <select id="selectRequirementsForCycle" resultType="map">
+        SELECT r.id AS requirementId, r.requirement_no AS requirementNo, r.title,
+               r.requirement_type AS requirementType, r.content_markdown AS contentMarkdown,
+               r.status, r.priority, r.owner_name AS ownerName, rc.coverage_type AS coverageType,
+               v.version_no AS versionNo, p.project_code AS projectCode, p.project_name AS projectName,
+               d.id AS designId, d.revision_no AS designRevisionNo,
+               d.design_type AS designType, d.title AS designTitle,
+               d.content_markdown AS designContentMarkdown, d.status AS designStatus,
+               d.author_name AS designAuthorName, d.created_at AS designCreatedAt
+        FROM dpm_requirement_case rc
+        INNER JOIN dpm_requirement r ON r.id = rc.requirement_id
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        LEFT JOIN dpm_requirement_design d ON d.id = (
+            SELECT d2.id FROM dpm_requirement_design d2
+            WHERE d2.requirement_id = r.id
+            ORDER BY d2.revision_no DESC LIMIT 1
+        )
+        WHERE rc.test_case_id = #{caseId} AND r.version_id = #{versionId}
+        ORDER BY r.sort_order, r.requirement_no
+    </select>
+    <insert id="insertCycleCaseRequirement">
+        INSERT INTO dpm_cycle_case_requirement
+        (cycle_case_id, requirement_id, coverage_type, requirement_snapshot, design_snapshot)
+        VALUES
+        (#{cycleCaseId}, #{requirementId}, #{coverageType},
+         CAST(#{requirementSnapshotJson} AS JSON),
+         <choose>
+             <when test="designSnapshotJson != null and designSnapshotJson != ''">
+                 CAST(#{designSnapshotJson} AS JSON)
+             </when>
+             <otherwise>NULL</otherwise>
+         </choose>)
+    </insert>
+    <select id="selectCases" resultType="com.devprocess.manager.testcycle.dto.TestCycleCaseDTO">
+        SELECT cc.id, cc.cycle_id AS cycleId, cc.test_case_id AS testCaseId,
+               cc.test_case_revision_id AS testCaseRevisionId,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.caseNo')) AS caseNo,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.title')) AS title,
+               CAST(JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.revisionNo')) AS UNSIGNED) AS revisionNo,
+               cc.execution_mode AS executionMode, cc.execution_status AS executionStatus,
+               cc.latest_result AS latestResult, cc.sequence_no AS sequenceNo,
+               CAST(cc.case_snapshot AS CHAR) AS caseSnapshotJson
+        FROM dpm_cycle_case cc
+        WHERE cc.cycle_id = #{cycleId}
+        ORDER BY cc.sequence_no, cc.id
+    </select>
+    <select id="selectCaseRequirements" resultType="com.devprocess.manager.testcycle.dto.TestCycleRequirementDTO">
+        SELECT id, requirement_id AS requirementId,
+               JSON_UNQUOTE(JSON_EXTRACT(requirement_snapshot, '$.requirementNo')) AS requirementNo,
+               JSON_UNQUOTE(JSON_EXTRACT(requirement_snapshot, '$.title')) AS title,
+               coverage_type AS coverageType,
+               CAST(requirement_snapshot AS CHAR) AS requirementSnapshotJson,
+               CAST(design_snapshot AS CHAR) AS designSnapshotJson
+        FROM dpm_cycle_case_requirement
+        WHERE cycle_case_id = #{cycleCaseId}
+        ORDER BY id
+    </select>
+    <delete id="deleteCaseRequirements">
+        DELETE FROM dpm_cycle_case_requirement
+        WHERE cycle_case_id = #{cycleCaseId}
+          AND EXISTS (
+              SELECT 1 FROM dpm_cycle_case cc
+              WHERE cc.id = #{cycleCaseId} AND cc.cycle_id = #{cycleId}
+          )
+    </delete>
+    <delete id="deleteCycleCase">
+        DELETE FROM dpm_cycle_case
+        WHERE cycle_id = #{cycleId} AND id = #{cycleCaseId}
+    </delete>
+    <update id="updateStatus">
+        UPDATE dpm_test_cycle
+        SET status = #{status},
+            started_at = CASE WHEN #{started} THEN NOW() ELSE started_at END,
+            completed_at = CASE WHEN #{completed} THEN NOW() ELSE completed_at END
+        WHERE id = #{id}
+    </update>
+</mapper>

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.version.mapper.VersionMapper">
+    <sql id="whereClause">
+        <where>
+            <if test="projectId != null">AND v.project_id = #{projectId}</if>
+            <if test="status != null and status != ''">AND v.status = #{status}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (v.version_no LIKE CONCAT('%', #{keyword}, '%')
+                  OR v.version_name LIKE CONCAT('%', #{keyword}, '%')
+                  OR p.project_code LIKE CONCAT('%', #{keyword}, '%')
+                  OR p.project_name LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectPage" resultType="com.devprocess.manager.version.dto.VersionDTO">
+        SELECT v.id, v.project_id, p.project_code, p.project_name,
+               v.version_no, v.version_name, v.status,
+               v.planned_start_date, v.planned_release_date, v.released_at,
+               v.description, v.created_at, v.updated_at,
+               (SELECT COUNT(1) FROM dpm_requirement r WHERE r.version_id = v.id) AS requirement_count,
+               (SELECT COUNT(1) FROM dpm_test_cycle c WHERE c.version_id = v.id) AS cycle_count
+        FROM dpm_version v
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        <include refid="whereClause"/>
+        ORDER BY v.updated_at DESC, v.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_version v
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        <include refid="whereClause"/>
+    </select>
+
+    <select id="selectById" resultType="com.devprocess.manager.version.dto.VersionDTO">
+        SELECT v.id, v.project_id, p.project_code, p.project_name,
+               v.version_no, v.version_name, v.status,
+               v.planned_start_date, v.planned_release_date, v.released_at,
+               v.description, v.created_at, v.updated_at,
+               (SELECT COUNT(1) FROM dpm_requirement r WHERE r.version_id = v.id) AS requirement_count,
+               (SELECT COUNT(1) FROM dpm_test_cycle c WHERE c.version_id = v.id) AS cycle_count
+        FROM dpm_version v
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        WHERE v.id = #{id}
+    </select>
+
+    <select id="countByProjectAndNo" resultType="int">
+        SELECT COUNT(1) FROM dpm_version
+        WHERE project_id = #{projectId} AND version_no = #{versionNo}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_version
+        (project_id, version_no, version_name, status, planned_start_date,
+         planned_release_date, released_at, description)
+        VALUES
+        (#{projectId}, #{versionNo}, #{versionName}, #{status}, #{plannedStartDate},
+         #{plannedReleaseDate}, #{releasedAt}, #{description})
+    </insert>
+
+    <update id="update">
+        UPDATE dpm_version
+        SET project_id = #{request.projectId},
+            version_no = #{request.versionNo},
+            version_name = #{request.versionName},
+            status = #{request.status},
+            planned_start_date = #{request.plannedStartDate},
+            planned_release_date = #{request.plannedReleaseDate},
+            released_at = #{request.releasedAt},
+            description = #{request.description}
+        WHERE id = #{id}
+    </update>
+</mapper>

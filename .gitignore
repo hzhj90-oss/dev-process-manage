@@ -1,0 +1,36 @@
+# Local credentials and machine-specific configuration
+.local/
+*.local.yml
+*.local.yaml
+
+# Build outputs
+backend/target/
+**/node_modules/
+frontend/dist/
+
+# Runtime data and logs
+data/
+logs/
+*.pid
+
+# IDE and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+# Generated frontend assets copied into the backend during builds
+backend/src/main/resources/static/
+
+# Additional secret files (keep examples under version control)
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.jks
+
+# Local diagnostics
+*.stackdump

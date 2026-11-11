@@ -1,0 +1,515 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.execution.mapper.ExecutionTaskMapper">
+    <sql id="taskColumns">
+        t.id, t.task_no AS taskNo, t.cycle_id AS cycleId, t.cycle_case_id AS cycleCaseId,
+        t.parent_task_id AS parentTaskId, t.task_type AS taskType, t.task_status AS taskStatus,
+        t.requested_by AS requestedBy, t.executor, t.retry_count AS retryCount,
+        t.heartbeat_at AS heartbeatAt, t.started_at AS startedAt, t.completed_at AS completedAt,
+        t.error_message AS errorMessage, t.created_at AS createdAt,
+        tc.cycle_no AS cycleNo, tc.cycle_name AS cycleName, tc.code_version AS codeVersion,
+        v.version_no AS versionNo, p.project_name AS projectName,
+        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentName')), e.environment_name) AS environmentName,
+        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentCode')), e.environment_code) AS environmentCode,
+        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentType')), e.environment_type) AS environmentType
+    </sql>
+    <sql id="taskJoins">
+        FROM dpm_execution_task t
+        INNER JOIN dpm_test_cycle tc ON tc.id = t.cycle_id
+        INNER JOIN dpm_version v ON v.id = tc.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        INNER JOIN dpm_environment e ON e.id = tc.environment_id
+    </sql>
+    <sql id="taskFilter">
+        <where>
+            AND t.parent_task_id IS NULL
+            <if test="status != null and status != ''">AND t.task_status = #{status}</if>
+            <if test="cycleId != null">AND t.cycle_id = #{cycleId}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (t.task_no LIKE CONCAT('%', #{keyword}, '%')
+                  OR tc.cycle_name LIKE CONCAT('%', #{keyword}, '%')
+                  OR tc.code_version LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+    <select id="selectPage" resultType="map">
+        SELECT <include refid="taskColumns"/>,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.totalCount, 0) ELSE 1 END AS caseCount,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.finishedCount, 0)
+                 ELSE IF(t.task_status IN ('COMPLETED','FAILED','CANCELLED'), 1, 0) END AS completedCount,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.passCount, 0)
+                 ELSE IF(latest.result = 'PASS', 1, 0) END AS passCount,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.failCount, 0)
+                 ELSE IF(latest.result = 'FAIL', 1, 0) END AS failCount,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.blockedCount, 0)
+                 ELSE IF(latest.result = 'BLOCKED', 1, 0) END AS blockedCount,
+            CASE WHEN t.task_type = 'EXECUTE_CYCLE' THEN IFNULL(child.skippedCount, 0)
+                 ELSE IF(latest.result = 'SKIPPED', 1, 0) END AS skippedCount
+        <include refid="taskJoins"/>
+        LEFT JOIN (
+            SELECT c.parent_task_id, COUNT(*) AS totalCount,
+                SUM(c.task_status IN ('COMPLETED','FAILED','CANCELLED')) AS finishedCount,
+                SUM(x.result = 'PASS') AS passCount,
+                SUM(x.result = 'FAIL') AS failCount,
+                SUM(x.result = 'BLOCKED') AS blockedCount,
+                SUM(x.result = 'SKIPPED') AS skippedCount
+            FROM dpm_execution_task c
+            LEFT JOIN dpm_test_execution x ON x.id = (
+                SELECT x2.id FROM dpm_test_execution x2
+                WHERE x2.task_id = c.id ORDER BY x2.attempt_no DESC LIMIT 1
+            )
+            WHERE c.parent_task_id IS NOT NULL
+            GROUP BY c.parent_task_id
+        ) child ON child.parent_task_id = t.id
+        LEFT JOIN dpm_test_execution latest ON latest.id = (
+            SELECT x3.id FROM dpm_test_execution x3
+            WHERE x3.task_id = t.id ORDER BY x3.attempt_no DESC LIMIT 1
+        )
+        <include refid="taskFilter"/>
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        <include refid="taskJoins"/>
+        <include refid="taskFilter"/>
+    </select>
+    <select id="selectCycleForUpdate" resultType="map">
+        SELECT tc.id, tc.status, tc.version_id AS versionId, tc.code_version AS codeVersion,
+               tc.environment_id AS environmentId,
+               CAST(tc.environment_snapshot AS CHAR) AS environmentSnapshotJson,
+               COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentType')), e.environment_type) AS environmentType,
+               COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentCode')), e.environment_code) AS environmentCode
+        FROM dpm_test_cycle tc
+        INNER JOIN dpm_environment e ON e.id = tc.environment_id
+        WHERE tc.id = #{cycleId}
+        FOR UPDATE
+    </select>
+    <select id="selectCycleIdByTaskId" resultType="long">
+        SELECT cycle_id FROM dpm_execution_task WHERE id = #{taskId}
+    </select>
+    <select id="selectActiveCycleRootTaskIds" resultType="long">
+        SELECT id
+        FROM dpm_execution_task
+        WHERE cycle_id = #{cycleId}
+          AND parent_task_id IS NULL
+          AND task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')
+        ORDER BY created_at, id
+    </select>
+    <select id="selectTaskForUpdate" resultType="map">
+        SELECT id, cycle_id AS cycleId, cycle_case_id AS cycleCaseId,
+               parent_task_id AS parentTaskId, task_type AS taskType,
+               task_status AS taskStatus, retry_count AS retryCount
+        FROM dpm_execution_task WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="selectByIdempotencyKey" resultType="map">
+        SELECT id, cycle_case_id AS cycleCaseId, task_type AS taskType
+        FROM dpm_execution_task
+        WHERE cycle_id = #{cycleId} AND idempotency_key = #{idempotencyKey}
+        LIMIT 1
+    </select>
+    <select id="selectCycleCasesForUpdate" resultType="map">
+        SELECT cc.id AS cycleCaseId, cc.cycle_id AS cycleId, cc.test_case_id AS testCaseId,
+               cc.execution_mode AS executionMode,
+               CAST(cc.case_snapshot AS CHAR) AS caseSnapshotJson,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.expectedResult')) AS expectedResult,
+               cr.script_revision_id AS scriptRevisionId,
+               sr.script_language AS scriptLanguage,
+               sr.script_version AS scriptVersion,
+               sr.runtime_version AS scriptRuntimeVersion,
+               sr.source_type AS scriptSourceType,
+               sr.source_path AS scriptSourcePath,
+               sr.source_content AS scriptSourceContent,
+               sr.entry_point AS scriptEntryPoint,
+               CAST(sr.arguments_json AS CHAR) AS scriptArgumentsJson
+        FROM dpm_cycle_case cc
+        LEFT JOIN dpm_test_case_revision cr ON cr.id = cc.test_case_revision_id
+        LEFT JOIN dpm_test_script_revision sr ON sr.id = cr.script_revision_id
+        WHERE cc.cycle_id = #{cycleId}
+        <if test="cycleCaseId != null">AND cc.id = #{cycleCaseId}</if>
+        ORDER BY cc.sequence_no, cc.id
+        FOR UPDATE
+    </select>
+    <select id="countActiveCycleTasks" resultType="int">
+        SELECT COUNT(1) FROM dpm_execution_task
+        WHERE cycle_id = #{cycleId} AND parent_task_id IS NULL
+          AND task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')
+    </select>
+    <select id="countActiveCycleParents" resultType="int">
+        SELECT COUNT(1) FROM dpm_execution_task
+        WHERE cycle_id = #{cycleId} AND task_type = 'EXECUTE_CYCLE'
+          AND parent_task_id IS NULL
+          AND task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')
+    </select>
+    <select id="countActiveCaseTasks" resultType="int">
+        SELECT COUNT(1) FROM dpm_execution_task
+        WHERE cycle_id = #{cycleId} AND cycle_case_id = #{cycleCaseId}
+          AND parent_task_id IS NULL
+          AND task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')
+    </select>
+    <insert id="insertTask" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_execution_task
+        (task_no, idempotency_key, cycle_id, cycle_case_id, parent_task_id,
+         task_type, task_status, requested_by, request_payload)
+        VALUES
+        (#{taskNo}, #{idempotencyKey}, #{cycleId}, #{cycleCaseId}, #{parentTaskId},
+         #{taskType}, #{taskStatus}, #{requestedBy},
+         <choose>
+             <when test="requestPayloadJson != null and requestPayloadJson != ''">CAST(#{requestPayloadJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>)
+    </insert>
+    <insert id="insertExecution" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_test_execution
+        (cycle_case_id, task_id, attempt_no, execution_mode, runner_type, trigger_source,
+         execution_status, expected_result_snapshot, request_snapshot, checkpoint_json)
+        VALUES
+        (#{cycleCaseId}, #{taskId}, #{attemptNo}, #{executionMode}, #{runnerType},
+         #{triggerSource}, #{executionStatus}, #{expectedResultSnapshot},
+         <choose>
+             <when test="requestSnapshotJson != null and requestSnapshotJson != ''">CAST(#{requestSnapshotJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         <choose>
+             <when test="checkpointJson != null and checkpointJson != ''">CAST(#{checkpointJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>)
+    </insert>
+    <insert id="insertEvent">
+        INSERT INTO dpm_execution_event
+        (execution_id, event_type, event_key, event_content, event_data, created_by)
+        VALUES
+        (#{executionId}, #{eventType}, #{eventKey}, #{eventContent},
+         <choose>
+             <when test="eventDataJson != null and eventDataJson != ''">CAST(#{eventDataJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>, #{createdBy})
+        ON DUPLICATE KEY UPDATE id = id
+    </insert>
+    <insert id="insertAttachment" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_execution_attachment
+        (execution_id, attachment_type, file_name, relative_path, mime_type,
+         file_size, sha256, created_by)
+        VALUES
+        (#{executionId}, #{attachmentType}, #{fileName}, #{relativePath}, #{mimeType},
+         #{fileSize}, #{sha256}, #{createdBy})
+    </insert>
+    <select id="selectAttachments" resultType="map">
+        SELECT id, execution_id AS executionId, attachment_type AS attachmentType,
+               file_name AS fileName, mime_type AS mimeType, file_size AS fileSize,
+               sha256, created_by AS createdBy, created_at AS createdAt
+        FROM dpm_execution_attachment
+        WHERE execution_id = #{executionId}
+        ORDER BY id
+    </select>
+    <select id="selectAttachmentById" resultType="map">
+        SELECT id, execution_id AS executionId, attachment_type AS attachmentType,
+               file_name AS fileName, relative_path AS relativePath, mime_type AS mimeType,
+               file_size AS fileSize, sha256, created_by AS createdBy, created_at AS createdAt
+        FROM dpm_execution_attachment
+        WHERE id = #{id}
+    </select>
+    <select id="selectTask" resultType="map">
+        SELECT <include refid="taskColumns"/>, t.parent_task_id AS parentTaskId,
+               CAST(t.request_payload AS CHAR) AS requestPayloadJson,
+               CAST(t.result_payload AS CHAR) AS resultPayloadJson,
+               t.retry_count AS retryCount
+        <include refid="taskJoins"/>
+        WHERE t.id = #{id}
+    </select>
+    <select id="selectChildTasks" resultType="map">
+        SELECT t.id, t.task_no AS taskNo, t.cycle_case_id AS cycleCaseId,
+               t.task_type AS taskType, t.task_status AS taskStatus,
+               t.requested_by AS requestedBy, t.executor, t.retry_count AS retryCount,
+               t.started_at AS startedAt, t.completed_at AS completedAt,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.caseNo')) AS caseNo,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.title')) AS caseTitle
+        FROM dpm_execution_task t
+        LEFT JOIN dpm_cycle_case cc ON cc.id = t.cycle_case_id
+        WHERE t.parent_task_id = #{parentTaskId}
+        ORDER BY t.created_at, t.id
+    </select>
+    <select id="selectChildTasksForUpdate" resultType="map">
+        SELECT t.id, t.task_no AS taskNo, t.cycle_case_id AS cycleCaseId,
+               t.task_type AS taskType, t.task_status AS taskStatus,
+               t.requested_by AS requestedBy, t.executor, t.retry_count AS retryCount
+        FROM dpm_execution_task t
+        WHERE t.parent_task_id = #{parentTaskId}
+        ORDER BY t.created_at, t.id
+        FOR UPDATE
+    </select>
+    <select id="selectExecutions" resultType="map">
+        SELECT id, cycle_case_id AS cycleCaseId, task_id AS taskId,
+               attempt_no AS attemptNo, execution_mode AS executionMode,
+               runner_type AS runnerType, trigger_source AS triggerSource,
+               execution_status AS executionStatus, result, executor_name AS executorName,
+               expected_result_snapshot AS expectedResultSnapshot, actual_result AS actualResult,
+               CAST(request_snapshot AS CHAR) AS requestSnapshotJson,
+               CAST(response_snapshot AS CHAR) AS responseSnapshotJson,
+               generated_script_language AS generatedScriptLanguage,
+               log_excerpt AS logExcerpt, human_intervention_required AS humanInterventionRequired,
+               human_intervention_status AS humanInterventionStatus,
+               human_intervention_note AS humanInterventionNote, error_message AS errorMessage,
+               started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs,
+               CAST(checkpoint_json AS CHAR) AS checkpointJson, created_at AS createdAt
+        FROM dpm_test_execution WHERE task_id = #{taskId}
+        ORDER BY attempt_no DESC
+    </select>
+    <select id="selectEvents" resultType="map">
+        SELECT id, execution_id AS executionId, event_type AS eventType,
+               event_key AS eventKey, event_content AS eventContent,
+               CAST(event_data AS CHAR) AS eventDataJson, created_by AS createdBy,
+               created_at AS createdAt
+        FROM dpm_execution_event WHERE execution_id = #{executionId}
+        ORDER BY id
+    </select>
+    <select id="selectExecutionForUpdate" resultType="map">
+        SELECT x.id, x.task_id AS taskId, x.cycle_case_id AS cycleCaseId,
+               x.attempt_no AS attemptNo, x.execution_mode AS executionMode,
+               x.runner_type AS runnerType, x.execution_status AS executionStatus,
+               x.result, x.expected_result_snapshot AS expectedResultSnapshot,
+               CAST(x.request_snapshot AS CHAR) AS requestSnapshotJson,
+               CAST(x.checkpoint_json AS CHAR) AS checkpointJson
+        FROM dpm_test_execution x
+        WHERE x.task_id = #{taskId} AND x.id = #{executionId}
+        FOR UPDATE
+    </select>
+    <select id="selectLatestExecutionForUpdate" resultType="map">
+        SELECT x.id, x.task_id AS taskId, x.cycle_case_id AS cycleCaseId,
+               x.attempt_no AS attemptNo, x.execution_mode AS executionMode,
+               x.runner_type AS runnerType, x.trigger_source AS triggerSource,
+               x.execution_status AS executionStatus, x.result,
+               x.expected_result_snapshot AS expectedResultSnapshot,
+               CAST(x.request_snapshot AS CHAR) AS requestSnapshotJson,
+               CAST(x.checkpoint_json AS CHAR) AS checkpointJson
+        FROM dpm_test_execution x
+        WHERE x.task_id = #{taskId}
+        ORDER BY x.attempt_no DESC LIMIT 1
+        FOR UPDATE
+    </select>
+    <!-- DATETIME 精度为秒：到期边界（<= NOW）视为过期，与续租的 > NOW 条件互补。 -->
+    <select id="selectStaleTasks" resultType="map">
+        SELECT id, cycle_id AS cycleId, cycle_case_id AS cycleCaseId,
+               parent_task_id AS parentTaskId
+        FROM dpm_execution_task
+        WHERE task_type = 'EXECUTE_CASE' AND task_status = 'RUNNING'
+          AND ((lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at &lt;= NOW())
+            OR (lease_owner IS NULL AND heartbeat_at IS NOT NULL
+                AND heartbeat_at &lt;= DATE_SUB(NOW(), INTERVAL 5 MINUTE)))
+        ORDER BY COALESCE(lease_expires_at, heartbeat_at)
+        LIMIT 100
+    </select>
+    <!-- ChatGPT 通过队列发现 AI 用例；真正认领由 start() 的行锁和状态更新完成。 -->
+    <select id="selectChatGptClaimableTasks" resultType="map">
+        SELECT t.id, x.id AS executionId
+        FROM dpm_execution_task t
+        INNER JOIN dpm_test_execution x ON x.id = (
+            SELECT x2.id FROM dpm_test_execution x2
+            WHERE x2.task_id = t.id ORDER BY x2.attempt_no DESC LIMIT 1
+        )
+        INNER JOIN dpm_test_cycle tc ON tc.id = t.cycle_id
+        INNER JOIN dpm_environment e ON e.id = tc.environment_id
+        WHERE tc.status = 'RUNNING'
+          AND t.task_type = 'EXECUTE_CASE'
+          AND t.task_status = 'PENDING'
+          AND x.execution_mode = 'AI'
+          AND x.runner_type = 'CHATGPT'
+          AND x.execution_status = 'QUEUED'
+          AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentType')),
+                       e.environment_type) &lt;&gt; 'PROD'
+        ORDER BY t.created_at, t.id
+        LIMIT #{limit}
+    </select>
+    <select id="selectClaimableTasks" resultType="map">
+        SELECT t.id, t.parent_task_id AS parentTaskId
+        FROM dpm_execution_task t
+        INNER JOIN dpm_test_execution x ON x.id = (
+            SELECT x2.id FROM dpm_test_execution x2
+            WHERE x2.task_id = t.id ORDER BY x2.attempt_no DESC LIMIT 1
+        )
+        INNER JOIN dpm_test_cycle tc ON tc.id = t.cycle_id
+        INNER JOIN dpm_environment e ON e.id = tc.environment_id
+        WHERE tc.status = 'RUNNING'
+          AND t.task_type = 'EXECUTE_CASE'
+          AND t.task_status = 'PENDING'
+          AND x.execution_status = 'QUEUED'
+          AND x.runner_type = #{runnerType}
+          AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(tc.environment_snapshot, '$.environmentType')),
+                       e.environment_type) &lt;&gt; 'PROD'
+          AND JSON_UNQUOTE(JSON_EXTRACT(x.request_snapshot, '$.scriptSnapshot.language')) = #{runnerType}
+          AND JSON_UNQUOTE(JSON_EXTRACT(x.request_snapshot, '$.scriptSnapshot.sourceType')) = 'INLINE'
+          AND JSON_TYPE(JSON_EXTRACT(x.request_snapshot, '$.scriptSnapshot.sourceContent')) = 'STRING'
+        ORDER BY t.created_at, t.id
+        LIMIT #{limit}
+    </select>
+    <select id="selectNextAttemptNo" resultType="int">
+        SELECT COALESCE(MAX(attempt_no), 0) + 1
+        FROM dpm_test_execution WHERE cycle_case_id = #{cycleCaseId}
+    </select>
+    <update id="updateCycleCase">
+        UPDATE dpm_cycle_case
+        SET execution_status = #{status},
+            latest_result = COALESCE(#{result}, latest_result)
+        WHERE id = #{cycleCaseId}
+    </update>
+    <!-- 调用方必须先锁定轮次行，再更新用例状态；此更新在同一事务内完成终态汇总。 -->
+    <update id="completeCycleIfAllCasesTerminal">
+        UPDATE dpm_test_cycle
+        SET status = 'COMPLETED',
+            completed_at = COALESCE(completed_at, NOW())
+        WHERE id = #{cycleId}
+          AND status = 'RUNNING'
+          AND EXISTS (
+              SELECT 1
+              FROM dpm_cycle_case cc
+              WHERE cc.cycle_id = dpm_test_cycle.id
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dpm_cycle_case cc
+              WHERE cc.cycle_id = dpm_test_cycle.id
+                AND cc.execution_status NOT IN ('COMPLETED', 'CANCELLED')
+          )
+    </update>
+    <update id="updateTaskStarted">
+        UPDATE dpm_execution_task
+        SET task_status = 'RUNNING', executor = #{executor},
+            started_at = COALESCE(started_at, NOW()), heartbeat_at = NOW(),
+            completed_at = NULL, error_message = NULL
+        WHERE id = #{id} AND task_status = 'PENDING'
+    </update>
+    <update id="updateTaskClaimed">
+        UPDATE dpm_execution_task
+        SET task_status = 'RUNNING', executor = #{runnerId},
+            started_at = COALESCE(started_at, NOW()), heartbeat_at = NOW(),
+            lease_owner = #{runnerId}, lease_token_hash = #{leaseTokenHash},
+            lease_expires_at = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND),
+            completed_at = NULL, error_message = NULL
+        WHERE id = #{id} AND task_status = 'PENDING'
+    </update>
+    <update id="updateTaskLeaseHeartbeat">
+        UPDATE dpm_execution_task
+        SET heartbeat_at = NOW(),
+            lease_expires_at = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND)
+        WHERE id = #{id} AND task_status = 'RUNNING'
+          AND lease_owner = #{runnerId} AND lease_token_hash = #{leaseTokenHash}
+          AND lease_expires_at &gt; NOW()
+    </update>
+    <update id="updateTaskFailed">
+        UPDATE dpm_execution_task
+        SET task_status = 'FAILED', completed_at = NOW(), heartbeat_at = NOW(),
+            error_message = #{errorMessage},
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status = 'RUNNING'
+          AND lease_owner = #{runnerId} AND lease_token_hash = #{leaseTokenHash}
+          AND lease_expires_at &gt; NOW()
+    </update>
+    <update id="updateExecutionStarted">
+        UPDATE dpm_test_execution
+        SET execution_status = 'RUNNING', executor_name = #{executorName},
+            started_at = COALESCE(started_at, NOW()), error_message = NULL
+        WHERE id = #{id} AND execution_status = 'QUEUED'
+    </update>
+    <update id="updateTaskHeartbeat">
+        UPDATE dpm_execution_task SET heartbeat_at = NOW() WHERE id = #{id} AND task_status = 'RUNNING'
+    </update>
+    <update id="updateExecutionWaitingHuman">
+        UPDATE dpm_test_execution
+        SET execution_status = 'WAITING_HUMAN', human_intervention_required = 1,
+            human_intervention_status = 'WAITING', human_intervention_note = #{note}
+        WHERE id = #{id} AND execution_status = 'RUNNING'
+    </update>
+    <update id="updateTaskWaitingHuman">
+        UPDATE dpm_execution_task
+        SET task_status = 'WAITING_HUMAN',
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status = 'RUNNING'
+    </update>
+    <update id="updateExecutionCheckpoint">
+        UPDATE dpm_test_execution
+        SET checkpoint_json = CAST(#{checkpointJson} AS JSON)
+        WHERE id = #{id} AND execution_status = 'RUNNING'
+    </update>
+    <update id="updateExecutionCompleted">
+        UPDATE dpm_test_execution
+        SET execution_status = 'COMPLETED', result = #{result},
+            actual_result = #{actualResult}, log_excerpt = #{logExcerpt},
+            error_message = #{errorMessage}, completed_at = NOW(),
+            duration_ms = IF(started_at IS NULL, NULL, TIMESTAMPDIFF(MICROSECOND, started_at, NOW()) DIV 1000)
+        WHERE id = #{id} AND execution_status = 'RUNNING'
+    </update>
+    <update id="updateExecutionHumanRejected">
+        UPDATE dpm_test_execution
+        SET execution_status = 'COMPLETED', result = 'BLOCKED',
+            actual_result = #{note}, human_intervention_status = 'REJECTED',
+            human_intervention_note = #{note}, completed_at = NOW(),
+            duration_ms = IF(started_at IS NULL, NULL, TIMESTAMPDIFF(MICROSECOND, started_at, NOW()) DIV 1000)
+        WHERE id = #{id} AND execution_status = 'WAITING_HUMAN'
+    </update>
+    <update id="updateTaskCompleted">
+        UPDATE dpm_execution_task
+        SET task_status = 'COMPLETED', completed_at = NOW(),
+            heartbeat_at = NOW(), lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status IN ('RUNNING','WAITING_HUMAN')
+    </update>
+    <update id="updateExecutionCancelled">
+        UPDATE dpm_test_execution
+        SET execution_status = 'CANCELLED', error_message = #{note}, completed_at = NOW(),
+            duration_ms = IF(started_at IS NULL, NULL, TIMESTAMPDIFF(MICROSECOND, started_at, NOW()) DIV 1000)
+        WHERE id = #{executionId}
+          AND execution_status IN ('QUEUED','RUNNING','WAITING_HUMAN','INTERRUPTED')
+    </update>
+    <update id="updateTaskCancelled">
+        UPDATE dpm_execution_task
+        SET task_status = 'CANCELLED', cancel_requested_at = NOW(), completed_at = NOW(),
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')
+    </update>
+    <update id="updateExecutionHumanConfirmed">
+        UPDATE dpm_test_execution
+        SET execution_status = 'QUEUED', human_intervention_status = 'CONFIRMED',
+            human_intervention_note = #{note}, human_intervention_required = 0
+        WHERE id = #{id} AND execution_status = 'WAITING_HUMAN'
+    </update>
+    <update id="updateTaskPending">
+        UPDATE dpm_execution_task
+        SET task_status = 'PENDING', executor = NULL, heartbeat_at = NULL,
+            completed_at = NULL, error_message = NULL,
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status IN ('WAITING_HUMAN','RECOVERY_REQUIRED')
+    </update>
+    <update id="updateTaskResumed">
+        UPDATE dpm_execution_task
+        SET task_status = 'PENDING', executor = NULL, retry_count = retry_count + 1,
+            heartbeat_at = NULL, completed_at = NULL, error_message = NULL,
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND task_status = 'RECOVERY_REQUIRED'
+    </update>
+    <update id="updateExecutionInterrupted">
+        UPDATE dpm_test_execution
+        SET execution_status = 'INTERRUPTED', error_message = #{note}, completed_at = NOW(),
+            duration_ms = IF(started_at IS NULL, NULL, TIMESTAMPDIFF(MICROSECOND, started_at, NOW()) DIV 1000)
+        WHERE id = #{id} AND execution_status = 'RUNNING'
+    </update>
+    <!-- 与 selectStaleTasks 使用相同的到期边界，防止候选扫描后状态更新漏掉刚好到期的租约。 -->
+    <update id="updateTaskRecoveryRequired">
+        UPDATE dpm_execution_task
+        SET task_status = 'RECOVERY_REQUIRED', error_message = #{note},
+            lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+        WHERE id = #{id}
+          AND task_status = 'RUNNING'
+          AND ((lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at &lt;= NOW())
+            OR (lease_owner IS NULL AND heartbeat_at IS NOT NULL
+                AND heartbeat_at &lt;= DATE_SUB(NOW(), INTERVAL 5 MINUTE)))
+    </update>
+    <update id="updateTaskAggregate">
+        UPDATE dpm_execution_task
+        SET task_status = #{status},
+            completed_at = CASE WHEN #{status} IN ('COMPLETED','FAILED','CANCELLED') THEN COALESCE(completed_at,NOW()) ELSE NULL END
+        WHERE id = #{id} AND task_type = 'EXECUTE_CYCLE'
+    </update>
+    <select id="selectParentTaskId" resultType="long">
+        SELECT parent_task_id FROM dpm_execution_task WHERE id = #{id}
+    </select>
+</mapper>

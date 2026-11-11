@@ -1,0 +1,40 @@
+server:
+  address: 127.0.0.1
+  port: 18090
+
+spring:
+  application:
+    name: dev-process-manager
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.devprocess.manager
+  configuration:
+    map-underscore-to-camel-case: true
+
+logging:
+  file:
+    name: logs/dev-process-manager.log
+  level:
+    root: INFO
+    com.devprocess.manager: INFO
+# Marks RUNNING tasks with no heartbeat for five minutes as RECOVERY_REQUIRED.
+# Recovery never replays a task automatically; the user must explicitly resume it.
+execution:
+  recovery:
+    enabled: true
+    scan-interval-ms: 60000
+  runner:
+    token: ${DPM_RUNNER_TOKEN:}
+    lease-seconds: 60
+  attachments:
+    # 证据文件存放在静态资源目录之外；可通过 DPM_ATTACHMENT_DIR 覆盖。
+    storage-dir: ${DPM_ATTACHMENT_DIR:./data/uploads/executions}
+    max-file-size-bytes: 20971520

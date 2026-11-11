@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.testscript.mapper.TestScriptMapper">
+    <sql id="summaryColumns">
+        s.id, s.script_code AS scriptCode, s.script_name AS scriptName,
+        s.enabled, s.description, s.updated_at AS updatedAt,
+        s.current_revision_no AS revisionNo,
+        r.script_version AS scriptVersion, r.script_language AS scriptLanguage,
+        r.runtime_version AS runtimeVersion
+    </sql>
+    <sql id="detailColumns">
+        <include refid="summaryColumns"/>,
+        s.current_revision_id AS currentRevisionId,
+        r.source_type AS sourceType, r.source_path AS sourcePath,
+        r.source_content AS sourceContent, r.entry_point AS entryPoint,
+        CAST(r.arguments_json AS CHAR) AS argumentsJson
+    </sql>
+    <sql id="filterClause">
+        <where>
+            <if test="language != null and language != ''">AND r.script_language = #{language}</if>
+            <if test="enabled != null">AND s.enabled = #{enabled}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (s.script_code LIKE CONCAT('%', #{keyword}, '%')
+                  OR s.script_name LIKE CONCAT('%', #{keyword}, '%')
+                  OR s.description LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+    <select id="selectPage" resultType="com.devprocess.manager.testscript.dto.TestScriptSummaryDTO">
+        SELECT <include refid="summaryColumns"/>
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        <include refid="filterClause"/>
+        ORDER BY s.updated_at DESC, s.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        <include refid="filterClause"/>
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.testscript.dto.TestScriptDTO">
+        SELECT <include refid="detailColumns"/>
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        WHERE s.id = #{id}
+    </select>
+    <select id="selectMainForUpdate" resultType="map">
+        SELECT id, enabled, current_revision_no AS revisionNo
+        FROM dpm_test_script WHERE id = #{id} FOR UPDATE
+    </select>
+    <select id="selectEnabledScriptByIdForUpdate"
+            resultType="com.devprocess.manager.testscript.dto.TestScriptDTO">
+        SELECT <include refid="detailColumns"/>
+        FROM dpm_test_script s
+        LEFT JOIN dpm_test_script_revision r ON r.id = s.current_revision_id
+        WHERE s.id = #{id} AND s.enabled = 1
+        FOR UPDATE
+    </select>
+    <select id="countByCode" resultType="int">
+        SELECT COUNT(1) FROM dpm_test_script
+        WHERE script_code = #{scriptCode}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+    <insert id="insertMain" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_test_script
+        (script_code, script_name, script_language, runtime_version, source_type,
+         source_path, source_content, entry_point, arguments_json, enabled, description,
+         current_revision_no, created_by)
+        VALUES
+        (#{scriptCode}, #{scriptName}, #{scriptLanguage}, #{runtimeVersion}, #{sourceType},
+         #{sourcePath}, #{sourceContent}, #{entryPoint},
+         <choose>
+             <when test="argumentsJson != null and argumentsJson != ''">CAST(#{argumentsJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         #{enabled}, #{description}, 0, #{createdBy})
+    </insert>
+    <update id="updateMain">
+        UPDATE dpm_test_script
+        SET script_code = #{request.scriptCode},
+            script_name = #{request.scriptName},
+            script_language = #{request.scriptLanguage},
+            runtime_version = #{request.runtimeVersion},
+            source_type = #{request.sourceType},
+            source_path = #{request.sourcePath},
+            source_content = #{request.sourceContent},
+            entry_point = #{request.entryPoint},
+            arguments_json = <choose>
+                <when test="request.argumentsJson != null and request.argumentsJson != ''">CAST(#{request.argumentsJson} AS JSON)</when>
+                <otherwise>NULL</otherwise>
+            </choose>,
+            enabled = #{request.enabled},
+            description = #{request.description},
+            current_revision_no = #{revisionNo}
+        WHERE id = #{id}
+    </update>
+    <insert id="insertRevision" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_test_script_revision
+        (script_id, revision_no, script_version, script_language, runtime_version,
+         source_type, source_path, source_content, entry_point, arguments_json,
+         change_note, created_by)
+        VALUES
+        (#{scriptId}, #{revisionNo}, #{scriptVersion}, #{scriptLanguage}, #{runtimeVersion},
+         #{sourceType}, #{sourcePath}, #{sourceContent}, #{entryPoint},
+         <choose>
+             <when test="argumentsJson != null and argumentsJson != ''">CAST(#{argumentsJson} AS JSON)</when>
+             <otherwise>NULL</otherwise>
+         </choose>,
+         #{changeNote}, #{createdBy})
+    </insert>
+    <update id="updateCurrentRevision">
+        UPDATE dpm_test_script
+        SET current_revision_no = #{revisionNo}, current_revision_id = #{revisionId}
+        WHERE id = #{id}
+    </update>
+    <update id="updateEnabled">
+        UPDATE dpm_test_script SET enabled = #{enabled} WHERE id = #{id}
+    </update>
+    <select id="selectRevisions" resultType="com.devprocess.manager.testscript.dto.TestScriptRevisionDTO">
+        SELECT id, script_id, revision_no, script_version, script_language,
+               runtime_version, source_type, source_path, source_content, entry_point,
+               CAST(arguments_json AS CHAR) AS arguments_json,
+               change_note, created_by, created_at
+        FROM dpm_test_script_revision
+        WHERE script_id = #{scriptId}
+        ORDER BY revision_no DESC
+    </select>
+    <select id="selectRevisionById" resultType="com.devprocess.manager.testscript.dto.TestScriptRevisionDTO">
+        SELECT id, script_id, revision_no, script_version, script_language,
+               runtime_version, source_type, source_path, source_content, entry_point,
+               CAST(arguments_json AS CHAR) AS arguments_json,
+               change_note, created_by, created_at
+        FROM dpm_test_script_revision
+        WHERE script_id = #{scriptId} AND id = #{revisionId}
+    </select>
+</mapper>

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.project.mapper.ProjectMapper">
+    <sql id="whereClause">
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND (p.project_code LIKE CONCAT('%', #{keyword}, '%')
+                  OR p.project_name LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+            <if test="status != null and status != ''">
+                AND p.status = #{status}
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectPage" resultType="com.devprocess.manager.project.dto.ProjectDTO">
+        SELECT p.id, p.project_code, p.project_name, p.description,
+               p.repository_url, p.main_branch, p.status, p.created_at, p.updated_at,
+               (SELECT COUNT(1) FROM dpm_version v WHERE v.project_id = p.id) AS version_count
+        FROM dpm_project p
+        <include refid="whereClause"/>
+        ORDER BY p.updated_at DESC, p.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1) FROM dpm_project p
+        <include refid="whereClause"/>
+    </select>
+
+    <select id="selectById" resultType="com.devprocess.manager.project.dto.ProjectDTO">
+        SELECT p.id, p.project_code, p.project_name, p.description,
+               p.repository_url, p.main_branch, p.status, p.created_at, p.updated_at,
+               (SELECT COUNT(1) FROM dpm_version v WHERE v.project_id = p.id) AS version_count
+        FROM dpm_project p
+        WHERE p.id = #{id}
+    </select>
+
+    <select id="countByCode" resultType="int">
+        SELECT COUNT(1) FROM dpm_project
+        WHERE project_code = #{projectCode}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_project
+        (project_code, project_name, description, repository_url, main_branch, status)
+        VALUES
+        (#{projectCode}, #{projectName}, #{description}, #{repositoryUrl}, #{mainBranch}, #{status})
+    </insert>
+
+    <update id="update">
+        UPDATE dpm_project
+        SET project_code = #{request.projectCode},
+            project_name = #{request.projectName},
+            description = #{request.description},
+            repository_url = #{request.repositoryUrl},
+            main_branch = #{request.mainBranch},
+            status = #{request.status}
+        WHERE id = #{id}
+    </update>
+</mapper>

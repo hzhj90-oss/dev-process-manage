@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.requirement.mapper.RequirementDesignMapper">
+    <select id="selectByRequirement" resultType="com.devprocess.manager.requirement.dto.RequirementDesignDTO">
+        SELECT id, requirement_id, revision_no, design_type, title, content_markdown,
+               attachment_path, status, author_name, created_at
+        FROM dpm_requirement_design
+        WHERE requirement_id = #{requirementId}
+        ORDER BY revision_no DESC, id DESC
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.requirement.dto.RequirementDesignDTO">
+        SELECT id, requirement_id, revision_no, design_type, title, content_markdown,
+               attachment_path, status, author_name, created_at
+        FROM dpm_requirement_design
+        WHERE requirement_id = #{requirementId} AND id = #{id}
+    </select>
+    <select id="selectMaxRevisionNo" resultType="int">
+        SELECT MAX(revision_no) FROM dpm_requirement_design
+        WHERE requirement_id = #{requirementId}
+    </select>
+    <insert id="insert">
+        INSERT INTO dpm_requirement_design
+        (requirement_id, revision_no, design_type, title, content_markdown,
+         attachment_path, status, author_name)
+        VALUES
+        (#{requirementId}, #{revisionNo}, #{request.designType}, #{request.title},
+         #{request.contentMarkdown}, #{request.attachmentPath}, #{request.status}, #{request.authorName})
+    </insert>
+</mapper>

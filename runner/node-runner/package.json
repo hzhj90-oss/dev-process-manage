@@ -1,0 +1,16 @@
+{
+  "name": "dpm-node-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node runner.mjs",
+    "test": "node --test sandbox.test.mjs"
+  },
+  "dependencies": {
+    "quickjs-emscripten": "0.32.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "dpm-browser-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node runner.mjs",
+    "test": "node --test browser-dsl.test.mjs browser-engine.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.65.0"
+  }
+}

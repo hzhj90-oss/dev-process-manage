@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.devprocess.manager.requirement.mapper.RequirementMapper">
+    <sql id="whereClause">
+        <where>
+            <if test="versionId != null">AND r.version_id = #{versionId}</if>
+            <if test="status != null and status != ''">AND r.status = #{status}</if>
+            <if test="priority != null and priority != ''">AND r.priority = #{priority}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (r.requirement_no LIKE CONCAT('%', #{keyword}, '%')
+                  OR r.title LIKE CONCAT('%', #{keyword}, '%')
+                  OR p.project_code LIKE CONCAT('%', #{keyword}, '%')
+                  OR v.version_no LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+        </where>
+    </sql>
+    <sql id="selectColumns">
+        r.id, r.version_id, v.version_no, v.version_name,
+        p.project_code, p.project_name, r.requirement_no, r.title,
+        r.requirement_type, r.content_markdown, r.status, r.priority,
+        r.owner_name, r.sort_order, r.created_at, r.updated_at,
+        (SELECT COUNT(1) FROM dpm_requirement_design d WHERE d.requirement_id = r.id) AS design_count,
+        (SELECT COUNT(1) FROM dpm_requirement_case rc WHERE rc.requirement_id = r.id) AS linked_case_count,
+        (SELECT MAX(d.revision_no) FROM dpm_requirement_design d WHERE d.requirement_id = r.id)
+            AS latest_design_revision_no
+    </sql>
+    <select id="selectPage" resultType="com.devprocess.manager.requirement.dto.RequirementDTO">
+        SELECT <include refid="selectColumns"/>
+        FROM dpm_requirement r
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        <include refid="whereClause"/>
+        ORDER BY r.sort_order ASC, r.updated_at DESC, r.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countPage" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_requirement r
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        <include refid="whereClause"/>
+    </select>
+    <select id="selectById" resultType="com.devprocess.manager.requirement.dto.RequirementDTO">
+        SELECT <include refid="selectColumns"/>
+        FROM dpm_requirement r
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        WHERE r.id = #{id}
+    </select>
+    <select id="selectByIdForUpdate" resultType="com.devprocess.manager.requirement.dto.RequirementDTO">
+        SELECT r.id, r.version_id, r.requirement_no
+        FROM dpm_requirement r
+        WHERE r.id = #{id}
+        FOR UPDATE
+    </select>
+    <select id="countByVersionAndNo" resultType="int">
+        SELECT COUNT(1) FROM dpm_requirement
+        WHERE version_id = #{versionId} AND requirement_no = #{requirementNo}
+        <if test="excludeId != null">AND id != #{excludeId}</if>
+    </select>
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dpm_requirement
+        (version_id, requirement_no, title, requirement_type, content_markdown,
+         status, priority, owner_name, sort_order)
+        VALUES
+        (#{versionId}, #{requirementNo}, #{title}, #{requirementType}, #{contentMarkdown},
+         #{status}, #{priority}, #{ownerName}, #{sortOrder})
+    </insert>
+    <update id="update">
+        UPDATE dpm_requirement
+        SET requirement_no = #{request.requirementNo},
+            title = #{request.title},
+            requirement_type = #{request.requirementType},
+            content_markdown = #{request.contentMarkdown},
+            status = #{request.status},
+            priority = #{request.priority},
+            owner_name = #{request.ownerName},
+            sort_order = #{request.sortOrder}
+        WHERE id = #{id}
+    </update>
+</mapper>
