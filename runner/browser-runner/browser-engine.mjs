@@ -3,8 +3,10 @@ import { browserTargetUrl, validateBrowserDsl } from './browser-dsl.mjs';
 
 // This is a constrained browser automation driver, not an OS container.
 // Only run against explicitly authorized, non-production test origins.
-export async function executeBrowserScript({ source, environment, chromePath, onStep, onScreenshot, shouldAbort }) {
+export async function executeBrowserScript({ source, environment, chromePath, onStep, onScreenshot, shouldAbort, abortSignal }) {
   const dsl = validateBrowserDsl(source);
+  const cancelled = () => Boolean(abortSignal?.aborted || shouldAbort?.());
+  if (cancelled()) throw Error('Browser execution cancelled or lease lost');
   if (String(environment?.environmentType ?? '').toUpperCase() === 'PROD')
     throw Error('Production browser automation is disabled');
   if (String(environment?.authType ?? 'NONE').toUpperCase() !== 'NONE')
@@ -22,17 +24,25 @@ export async function executeBrowserScript({ source, environment, chromePath, on
     args: ['--disable-extensions', '--no-first-run', '--no-default-browser-check']
   });
   let context;
+  let page;
   const logs = [];
   let passedAssertions = 0;
   let screenshots = 0;
   let deadlineTimer;
+  let deadlineExceeded = false;
+  const closeOnAbort = () => { if (context) context.close().catch(() => {}); };
+  abortSignal?.addEventListener('abort', closeOnAbort, { once: true });
   try {
-    deadlineTimer = setTimeout(() => context?.close().catch(() => {}), dsl.timeoutMs);
+    deadlineTimer = setTimeout(() => {
+      deadlineExceeded = true;
+      context?.close().catch(() => {});
+    }, dsl.timeoutMs);
     context = await browser.newContext({
       viewport: { width: 1280, height: 800 }, serviceWorkers: 'block',
       acceptDownloads: false, permissions: [], ignoreHTTPSErrors: false,
       javaScriptEnabled: true
     });
+    if (cancelled()) throw Error('Browser execution cancelled or lease lost');
     await context.route('**/*', async route => {
       let permitted = false;
       try {
@@ -46,7 +56,7 @@ export async function executeBrowserScript({ source, environment, chromePath, on
     if (typeof context.routeWebSocket === 'function') {
       await context.routeWebSocket('**/*', websocket => websocket.close());
     }
-    const page = await context.newPage();
+    page = await context.newPage();
     page.on('popup', popup => popup.close().catch(() => {}));
     page.setDefaultTimeout(5000);
     page.setDefaultNavigationTimeout(10000);
@@ -65,10 +75,17 @@ export async function executeBrowserScript({ source, environment, chromePath, on
       } else if (step.action === 'PRESS') {
         await locator.press(step.key);
       } else if (step.action === 'WAIT_VISIBLE' || step.action === 'ASSERT_VISIBLE') {
-        await locator.waitFor({ state: 'visible' });
+        try { await locator.waitFor({ state: 'visible' }); }
+        catch (error) {
+          if (step.action === 'ASSERT_VISIBLE')
+            throw Error('ASSERTION_FAILED: required element was not visible');
+          throw error;
+        }
         if (step.action === 'ASSERT_VISIBLE') passedAssertions++;
       } else if (step.action === 'ASSERT_TEXT') {
-        const value = await locator.innerText();
+        let value;
+        try { value = await locator.innerText(); }
+        catch { throw Error('ASSERTION_FAILED: text element was not available'); }
         if (!value.includes(step.expected)) throw Error('ASSERTION_FAILED: expected text not found in selected element');
         passedAssertions++;
       } else if (step.action === 'ASSERT_TITLE') {
@@ -91,7 +108,20 @@ export async function executeBrowserScript({ source, environment, chromePath, on
     }
     if (passedAssertions === 0) throw Error('Browser DSL must execute at least one assertion');
     return { result: 'PASS', passedAssertions, screenshots, logs };
+  } catch (error) {
+    if (cancelled()) throw Error('Browser execution cancelled or lease lost');
+    if (deadlineExceeded) throw Error('Browser task exceeded its deadline');
+    // Preserve the real failure and collect a bounded screenshot when possible.
+    // Do not capture after lease loss or cancellation.
+    if (!cancelled() && page && !page.isClosed() && onScreenshot) {
+      try {
+        const buffer = await page.screenshot({ type: 'png', animations: 'disabled', timeout: 2000 });
+        if (buffer.length <= 5 * 1024 * 1024) await onScreenshot('browser-failure.png', buffer);
+      } catch { /* Failure evidence is best-effort; keep the original error. */ }
+    }
+    throw error;
   } finally {
+    abortSignal?.removeEventListener('abort', closeOnAbort);
     clearTimeout(deadlineTimer);
     if (context) await context.close().catch(() => {});
     await browser.close().catch(() => {});

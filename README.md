@@ -156,3 +156,15 @@ Execution boundary: ChatGPT participates as the model in the ChatGPT conversatio
 1. CI verification workflow is staged at `.github/workflows/verify.yml`: Java 8, Node 22, frontend, HTTP/Node/Browser Runner policy tests and isolated MySQL 5.7 tests. The local directory has no `.git` or remote repository, so the workflow cannot be triggered until the project is put under source control; no online CI run is claimed.
 2. Implement Python/Java Runners only after selecting a verifiable OS-level sandbox; expand Node Runner only if a stronger boundary is available for native Node.js APIs.
 3. Frontend dependency upgrades are complete; npm lockfile audit shows 0 known vulnerabilities for frontend, Node Runner and Browser Runner. CI now audits moderate-and-higher findings and installs dependencies with `--ignore-scripts`. FILE execution still requires a verifiable OS sandbox and resistance to filesystem races.
+## Browser Runner real-database verification (opt-in)
+
+The Chrome Browser Runner supports automatic failure screenshots (`browser-failure.png`) and records `ASSERTION_FAILED` events for failed assertions. A **separate, explicitly opt-in** local regression tests both PASS and intentionally FAIL outcomes through the actual task lease, execution log, PNG attachment download, and HTML test report:
+
+```powershell
+cd D:\code\dev-process-manager
+$env:DPM_BROWSER_E2E_VERSION_ID = '4'       # replace with your DPM-VERIFY-* project version
+$env:DPM_BROWSER_E2E_ALLOW_WRITE = 'YES'
+node .\scripts\test-browser-real-db.mjs
+```
+
+Prerequisites: the application and Browser Runner must be running locally at `127.0.0.1:18090`. The script accepts only a project whose code starts with `DPM-VERIFY-`, only a TEST/NONE-auth environment on loopback, and creates dedicated test-cycle records (no historical cleanup). It is not part of CI or the default read-only test suite. Browser Runner does not provide OS-level isolation and must not be directed at arbitrary untrusted or production sites.

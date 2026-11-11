@@ -68,3 +68,26 @@ Browser Runner 初始仅允许页面 `http://127.0.0.1:18090`。为其他明确�
 剩余工作：对真实数据库中**专用测试轮次**进行端到端用例验收、截图附件在报告中的页面化核对、可靠中断/租约失效处理、凭据安全注入和 OS 级隔离评估。旧 Python/Java FILE 脚本执行仍然关闭。CI workflow 已加入 Browser 单测和 npm 安全审计，但尚未在远端仓库运行。
 
 - 追加：脚本编辑窗口的 Browser / Playwright 语言选项通过真实 Chrome 测试；Runner 再次检查任务与环境快照中任意一方是否为 PROD，均禁止执行。
+
+## 2026-11-11：GitHub 初始化及 Browser Runner 真实数据库验收
+
+- 新 GitHub 仓库：`https://github.com/hzhj90-oss/dev-process-manage`，`main` 分支已收录初始 194 份源码、文档和脚本。
+- GitHub 首次提交：`17f75a5e3408e3c1f5c5fd33959fe267e9473c30`；本地 `main` 已关联 `origin/main`，保留 `backup/initial-local-snapshot`。同步不包含 `.local/`、`data/`、`logs/`、构建产物和依赖缓存。
+- 首次 GitHub Actions Verify：`https://github.com/hzhj90-oss/dev-process-manage/actions/runs/42956112135`，结果 **success**，已在远端实测 Java/前端/Runner/MySQL 集成流程。
+- Browser Runner **真实数据库**（非 mock）执行结果：PASS 轮次 `42`、任务 `109`、执行 `73`，截图附件 `3`；有意断言失败轮次 `43`、任务 `110`、截图附件 `4`，执行结果正确归类为 FAIL。
+- 浏览器执行器增强：断言缺失元素、断言文本元素不可用时归类 `ASSERTION_FAILED`；任意运行错误在租约未失效且页面仍可用时尝试自动保存 `browser-failure.png`，截图失败也不会覆盖原始错误；Runner 对断言失败额外写入 `ASSERTION_FAILED` 事件。
+- 新增 `runner/browser-runner/browser-failure-smoke.mjs` 与 `browser-protocol-failure.test.mjs`，分别验证失败截图和模拟管理接口的 FAIL/附件/事件全链路；纳入 `scripts/test-browser-integration.ps1`。
+- 新增可重复的**真实数据库**自检程序 `scripts/test-browser-real-db.mjs`。默认拒绝写入，必须显式设置 `DPM_BROWSER_E2E_ALLOW_WRITE=YES` 和 `DPM_BROWSER_E2E_VERSION_ID=<验证版本ID>`。只允许项目编号以 `DPM-VERIFY-` 开头的验证项目，且只连接 `127.0.0.1:18090` 的 TEST、NONE 环境；每次测试新增独立轮次，不清理历史记录。
+- 新脚本再次验证：PASS 轮次 `44` / 任务 `111`、FAIL 轮次 `45` / 任务 `112`，两者均完整验证 PNG 下载与 HTML 报告链接；失败轮次同时核对 `ASSERTION_FAILED` 事件。
+- **注意**：Browser Runner 仍不是 OS 沙箱，仅允许明确授权的非生产站点，不能执行任意不可信网页。Python/Java Runner 仍未开放。
+
+### Browser Runner 真实数据库验收（仅本机测试环境、显式写入）
+
+```powershell
+cd D:\code\dev-process-manager
+$env:DPM_BROWSER_E2E_VERSION_ID = '4'  # 仅示例，本机 DPM-VERIFY 验证版本
+$env:DPM_BROWSER_E2E_ALLOW_WRITE = 'YES'
+node .\scripts\test-browser-real-db.mjs
+```
+
+每次运行会新建两个测试轮次：一个预期 PASS，一个有意预期 FAIL；自动检查截图附件、附件下载、HTML 报告和失败事件。先确保后端和 Browser Runner 已启动。不要在生产环境运行。

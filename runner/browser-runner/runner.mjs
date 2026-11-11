@@ -7,6 +7,7 @@ const runnerId = process.env.DPM_RUNNER_ID || ('browser-' + hostname().toLowerCa
 const chromePath = process.env.DPM_CHROME_PATH || '';
 const pollIntervalMs = 2000;
 let stopping = false;
+let activeExecutionAbort = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function redact(value) {
   return String(value ?? '')
@@ -89,12 +90,15 @@ async function executeClaimed(payload) {
   await heartbeat(job);
   let busy = false;
   let leaseLost = false;
+  const executionAbort = new AbortController();
+  activeExecutionAbort = executionAbort;
   const timer = setInterval(async () => {
     if (busy || leaseLost || stopping) return;
     busy = true;
     try { await heartbeat(job); }
     catch (error) {
       leaseLost = true;
+      executionAbort.abort();
       log('ERROR', 'Browser Runner lease lost for task ' + job.task.id, error.message);
     } finally { busy = false; }
   }, 15000);
@@ -110,8 +114,9 @@ async function executeClaimed(payload) {
       environment: { ...environment, environmentType: environment?.environmentType || job.task.environmentType },
       chromePath,
       shouldAbort: () => leaseLost || stopping,
+      abortSignal: executionAbort.signal,
       onStep: async (index, step) => {
-        if (leaseLost) return;
+        if (leaseLost || stopping) return;
         const type = step.action.startsWith('ASSERT_') ? 'ASSERTION_PASSED' : 'STEP_COMPLETED';
         await event(job, type, 'browser-' + job.execution.id + '-step-' + index,
           'Browser step ' + (index + 1) + ': ' + step.action, {
@@ -119,23 +124,32 @@ async function executeClaimed(payload) {
           });
       },
       onScreenshot: async (name, buffer) => {
-        if (!leaseLost) await screenshot(job, name, buffer);
+        if (!leaseLost && !stopping) await screenshot(job, name, buffer);
       }
     });
-    if (leaseLost) return;
+    if (leaseLost || stopping) return;
     lines.push(...result.logs);
     await stop();
+    if (leaseLost || stopping) return;
     await complete(job, 'PASS', JSON.stringify({
       runtime: 'playwright-chrome', assertions: result.passedAssertions,
       screenshots: result.screenshots
     }), lines);
     log('INFO', 'Browser task completed', 'task=' + job.task.id);
   } catch (error) {
-    if (leaseLost) return;
+    if (leaseLost || stopping) return;
     const message = redact(error.message);
     lines.push(message);
     await stop();
     const assertionFailed = message.startsWith('ASSERTION_FAILED:');
+    if (assertionFailed) {
+      try {
+        await event(job, 'ASSERTION_FAILED', 'browser-' + job.execution.id + '-assertion-failed',
+          message, { result: 'FAIL', runtime: 'playwright-chrome' });
+      } catch (eventError) {
+        log('WARN', 'Could not record assertion failure event', eventError.message);
+      }
+    }
     try {
       await complete(job, assertionFailed ? 'FAIL' : 'BLOCKED',
         message, lines, message);
@@ -144,7 +158,10 @@ async function executeClaimed(payload) {
       catch (nested) { log('ERROR', 'Unable to report browser task', nested.message); }
     }
     log('ERROR', 'Browser task did not pass', 'task=' + job.task.id + ' ' + message);
-  } finally { clearInterval(timer); }
+  } finally {
+    clearInterval(timer);
+    if (activeExecutionAbort === executionAbort) activeExecutionAbort = null;
+  }
 }
 async function main() {
   if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(managerUrl))
@@ -163,7 +180,11 @@ async function main() {
     }
   }
 }
-process.on('SIGINT', () => { stopping = true; });
-process.on('SIGTERM', () => { stopping = true; });
+function requestStop() {
+  stopping = true;
+  activeExecutionAbort?.abort();
+}
+process.on('SIGINT', requestStop);
+process.on('SIGTERM', requestStop);
 main().catch(error => { log('FATAL', error.message); process.exitCode = 1; });
 

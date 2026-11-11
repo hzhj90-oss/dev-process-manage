@@ -15,9 +15,15 @@ Write-Host '[1/3] Run non-destructive Chrome browser smoke'
 & $Node (Join-Path $BrowserRoot 'browser-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Browser smoke failed.' }
 Write-Host '[2/3] Verify worker claim/events/PNG upload/completion against mock manager'
-& $Node --test (Join-Path $BrowserRoot 'browser-protocol.test.mjs')
+& $Node --test (Join-Path $BrowserRoot 'browser-protocol.test.mjs') (Join-Path $BrowserRoot 'browser-protocol-failure.test.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Browser Runner protocol test failed.' }
 Write-Host '[3/3] Verify Browser language in the actual script editor'
 & $Node (Join-Path $BrowserRoot 'browser-ui-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Browser script editor UI test failed.' }
+Write-Host '[extra] Verify assertion failure classification and automatic screenshots'
+& $Node (Join-Path $BrowserRoot 'browser-failure-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Browser failure-evidence regression failed.' }
+Write-Host '[extra] Verify immediate Chrome cancellation on lease loss'
+& $Node (Join-Path $BrowserRoot 'browser-abort-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Browser cancellation regression failed.' }
 Write-Host 'Browser local integration passed without test database mutation.'
