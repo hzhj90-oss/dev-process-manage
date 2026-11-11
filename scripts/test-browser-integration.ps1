@@ -23,6 +23,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Browser script editor UI test failed.' }
 Write-Host '[extra] Verify assertion failure classification and automatic screenshots'
 & $Node (Join-Path $BrowserRoot 'browser-failure-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Browser failure-evidence regression failed.' }
+Write-Host '[extra] Verify dashboard displays live totals and navigable modules'
+& $Node (Join-Path $BrowserRoot 'browser-dashboard-smoke.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Dashboard live stats smoke failed.' }
 Write-Host '[extra] Verify immediate Chrome cancellation on lease loss'
 & $Node (Join-Path $BrowserRoot 'browser-abort-smoke.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Browser cancellation regression failed.' }
