@@ -10,6 +10,7 @@ const EnvironmentListView = () => import('../views/EnvironmentListView.vue')
 const TestCycleListView = () => import('../views/TestCycleListView.vue')
 const ExecutionTaskListView = () => import('../views/ExecutionTaskListView.vue')
 const TestReportListView = () => import('../views/TestReportListView.vue')
+const AiExecutionWorkbenchView = () => import('../views/AiExecutionWorkbenchView.vue')
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -23,6 +24,7 @@ const router = createRouter({
     { path: '/environments', name: 'environments', component: EnvironmentListView },
     { path: '/test-cycles', name: 'test-cycles', component: TestCycleListView },
     { path: '/execution-tasks', name: 'execution-tasks', component: ExecutionTaskListView },
+    { path: '/ai-execution', name: 'ai-execution', component: AiExecutionWorkbenchView },
     { path: '/test-reports', name: 'test-reports', component: TestReportListView }
   ]
 })

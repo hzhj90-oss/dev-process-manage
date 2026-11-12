@@ -40,6 +40,14 @@ public class TestCaseService {
 
     public PageResult<TestCaseDTO> page(String keyword, String status, String testType,
             String priority, String executionMode, int pageNum, int pageSize) {
+        return page(keyword, status, testType, priority, executionMode, null, pageNum, pageSize);
+    }
+
+    public PageResult<TestCaseDTO> page(String keyword, String status, String testType,
+            String priority, String executionMode, Long requirementId, int pageNum, int pageSize) {
+        if (requirementId != null && requirementId <= 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST.value(), "关联需求 ID 不合法");
+        }
         int page = Math.max(pageNum, 1);
         int size = Math.min(Math.max(pageSize, 1), 100);
         String key = trim(keyword);
@@ -52,8 +60,8 @@ public class TestCaseService {
         validateFilter(level, PRIORITIES, "用例优先级");
         validateFilter(mode, EXECUTION_MODES, "执行方式");
         List<TestCaseDTO> list = mapper.selectPage(
-                key, state, type, level, mode, (page - 1) * size, size);
-        long total = mapper.countPage(key, state, type, level, mode);
+                key, state, type, level, mode, requirementId, (page - 1) * size, size);
+        long total = mapper.countPage(key, state, type, level, mode, requirementId);
         return new PageResult<TestCaseDTO>(list, total, page, size);
     }
 
@@ -123,6 +131,25 @@ public class TestCaseService {
 
     public List<TestCaseRequirementDTO> availableRequirements(Long versionId) {
         return mapper.selectAvailableRequirements(versionId);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<TestCaseRequirementDTO> availableRequirementsPage(
+            Long versionId, int pageNum, int pageSize) {
+        if (versionId != null && versionId <= 0) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST.value(), "版本 ID 不合法");
+        }
+        // A bounded page cannot accidentally materialize every requirement
+        // (including large Markdown bodies) in the selection control.
+        if (pageNum < 1 || pageSize < 1 || pageSize > 100
+                || (long) (pageNum - 1) * pageSize > Integer.MAX_VALUE) {
+            throw new BusinessException(HttpStatus.BAD_REQUEST.value(), "选项分页参数不合法");
+        }
+        int offset = (pageNum - 1) * pageSize;
+        long total = mapper.countAvailableRequirements(versionId);
+        List<TestCaseRequirementDTO> list = mapper.selectAvailableRequirementsPage(
+                versionId, offset, pageSize);
+        return new PageResult<TestCaseRequirementDTO>(list, total, pageNum, pageSize);
     }
 
     public List<TestScriptDTO> scripts() {

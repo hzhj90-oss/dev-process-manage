@@ -46,6 +46,45 @@
             </if>
         </where>
     </sql>
+    <!-- Read-only diagnosis: no mutation or inferred automatic repair. All cases
+         are terminal while cycle status remains RUNNING. Root tasks are grouped
+         separately so current activity is visible before any human decision. -->
+    <select id="selectStatusDiagnostics" resultType="map">
+        SELECT tc.id AS cycleId, tc.cycle_no AS cycleNo, tc.cycle_name AS cycleName,
+               tc.status AS cycleStatus, tc.created_at AS createdAt,
+               v.version_no AS versionNo, p.project_name AS projectName,
+               caseStats.caseCount, caseStats.completedCount AS completedCases,
+               caseStats.cancelledCount AS cancelledCases,
+               IFNULL(rootStats.rootCount, 0) AS rootTaskCount,
+               IFNULL(rootStats.activeCount, 0) AS activeRootTasks,
+               IFNULL(rootStats.completedCount, 0) AS completedRootTasks,
+               IFNULL(rootStats.failedCount, 0) AS failedRootTasks,
+               IFNULL(rootStats.cancelledCount, 0) AS cancelledRootTasks
+        FROM dpm_test_cycle tc
+        INNER JOIN dpm_version v ON v.id = tc.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        INNER JOIN (
+            SELECT cycle_id, COUNT(1) AS caseCount,
+                   SUM(execution_status = 'COMPLETED') AS completedCount,
+                   SUM(execution_status = 'CANCELLED') AS cancelledCount,
+                   SUM(execution_status IN ('COMPLETED','CANCELLED')) AS terminalCount
+            FROM dpm_cycle_case GROUP BY cycle_id
+        ) caseStats ON caseStats.cycle_id = tc.id
+        LEFT JOIN (
+            SELECT cycle_id, COUNT(1) AS rootCount,
+                   SUM(task_status IN ('PENDING','RUNNING','WAITING_HUMAN','RECOVERY_REQUIRED')) AS activeCount,
+                   SUM(task_status = 'COMPLETED') AS completedCount,
+                   SUM(task_status = 'FAILED') AS failedCount,
+                   SUM(task_status = 'CANCELLED') AS cancelledCount
+            FROM dpm_execution_task WHERE parent_task_id IS NULL
+            GROUP BY cycle_id
+        ) rootStats ON rootStats.cycle_id = tc.id
+        WHERE tc.status = 'RUNNING'
+          AND caseStats.caseCount &gt; 0
+          AND caseStats.caseCount = caseStats.terminalCount
+        ORDER BY tc.created_at DESC, tc.id DESC
+        LIMIT #{limit}
+    </select>
     <select id="selectPage" resultType="com.devprocess.manager.testcycle.dto.TestCycleSummaryDTO">
         SELECT <include refid="summaryColumns"/>
         <include refid="cycleJoins"/>
@@ -67,6 +106,13 @@
                tc.description, tc.created_by AS createdBy
         <include refid="cycleJoins"/>
         WHERE tc.id = #{id}
+    </select>
+    <select id="selectPreviousCompletedCycleId" resultType="long">
+        SELECT id FROM dpm_test_cycle
+        WHERE version_id = #{versionId} AND cycle_no &lt; #{cycleNo}
+          AND status = 'COMPLETED'
+        ORDER BY cycle_no DESC, id DESC
+        LIMIT 1
     </select>
     <select id="selectCycleForUpdate" resultType="map">
         SELECT id, version_id AS versionId, status

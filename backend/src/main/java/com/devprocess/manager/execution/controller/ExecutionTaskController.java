@@ -49,6 +49,17 @@ public class ExecutionTaskController {
         return service.page(status, cycleId, keyword, pageNum, pageSize);
     }
 
+    @GetMapping("/execution-tasks/audit/chatgpt")
+    public PageResult<Map<String, Object>> chatGptAudit(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String result,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "false") boolean recoveredOnly,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return service.chatGptAudit(status, result, keyword, recoveredOnly, pageNum, pageSize);
+    }
+
     /**
      * Returns queued AI cases for ChatGPT to execute. The subsequent start endpoint
      * performs the atomic claim and rejects stale or concurrently claimed candidates.

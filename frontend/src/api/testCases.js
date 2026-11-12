@@ -8,5 +8,6 @@ export const testCaseApi = {
   revisions: id => http.get(`/test-cases/${id}/revisions`),
   getRevision: (id, revisionId) => http.get(`/test-cases/${id}/revisions/${revisionId}`),
   availableRequirements: params => http.get('/test-cases/available-requirements', { params }),
+  availableRequirementsPage: params => http.get('/test-cases/available-requirements/page', { params }),
   scripts: () => http.get('/test-cases/scripts')
 }

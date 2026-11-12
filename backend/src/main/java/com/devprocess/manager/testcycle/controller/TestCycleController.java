@@ -30,6 +30,16 @@ public class TestCycleController {
         return service.page(versionId, environmentId, status, keyword, pageNum, pageSize);
     }
 
+    /** Read-only status mismatch diagnosis; never reconciles historical rows. */
+    @GetMapping("/diagnostics")
+    public ResponseEntity<java.util.Map<String, Object>> diagnostics(
+            @RequestParam(defaultValue = "100") int limit) {
+        return ResponseEntity.ok()
+                .cacheControl(org.springframework.http.CacheControl.noStore())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(service.statusDiagnostics(limit));
+    }
+
     @GetMapping("/{id}")
     public TestCycleDTO get(@PathVariable Long id) {
         return service.get(id);

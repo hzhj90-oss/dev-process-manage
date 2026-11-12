@@ -64,6 +64,64 @@ public class TestCycleService {
         return new PageResult<TestCycleSummaryDTO>(rows, total, page, size);
     }
 
+    /**
+     * Read-only diagnosis; no historical cycle may be automatically completed
+     * solely because its current case statuses look terminal.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> statusDiagnostics(int limit) {
+        if (limit < 1 || limit > 200) throw badRequest("状态诊断最多允许查询 200 个轮次");
+        List<Map<String, Object>> rows = mapper.selectStatusDiagnostics(limit + 1);
+        if (rows == null) rows = java.util.Collections.emptyList();
+        boolean truncated = rows.size() > limit;
+        List<Map<String, Object>> safeRows = new ArrayList<Map<String, Object>>();
+        int active = 0, terminal = 0, withoutTask = 0;
+        for (Map<String, Object> source : rows.subList(0, Math.min(rows.size(), limit))) {
+            // Never expose raw task maps, execution snapshots, event content or credentials.
+            Map<String, Object> row = new LinkedHashMap<String, Object>();
+            for (String key : new String[] {"cycleId", "cycleNo", "cycleName",
+                    "projectName", "versionNo", "createdAt", "cycleStatus",
+                    "caseCount", "completedCases", "cancelledCases", "rootTaskCount",
+                    "activeRootTasks", "completedRootTasks", "failedRootTasks",
+                    "cancelledRootTasks"}) {
+                row.put(key, source.get(key));
+            }
+            long activeRoots = countNumber(source.get("activeRootTasks"));
+            long rootCount = countNumber(source.get("rootTaskCount"));
+            String category = activeRoots > 0 ? "ACTIVE_ROOT_TASK"
+                    : rootCount > 0 ? "NO_ACTIVE_ROOT_TASK" : "NO_ROOT_TASK";
+            row.put("diagnosticCategory", category);
+            if (activeRoots > 0) active++;
+            else if (rootCount > 0) terminal++;
+            else withoutTask++;
+            safeRows.add(row);
+        }
+        Map<String, Object> response = new LinkedHashMap<String, Object>();
+        response.put("readOnly", true);
+        response.put("limit", limit);
+        response.put("count", safeRows.size());
+        response.put("truncated", truncated);
+        response.put("activeRootCycles", active);
+        response.put("noActiveRootCycles", terminal);
+        response.put("noRootTaskCycles", withoutTask);
+        response.put("items", safeRows);
+        return response;
+    }
+
+    private long countNumber(Object value) {
+        if (value instanceof Number) return ((Number) value).longValue();
+        return 0L;
+    }
+
+    /** Returns only a previous COMPLETED round within the same version; never updates history. */
+    @Transactional(readOnly = true)
+    public TestCycleDTO previousCompleted(TestCycleDTO current) {
+        if (current == null || current.getVersionId() == null || current.getCycleNo() == null
+                || current.getCycleNo() <= 1) return null;
+        Long priorId = mapper.selectPreviousCompletedCycleId(current.getVersionId(), current.getCycleNo());
+        return priorId == null ? null : get(priorId);
+    }
+
     public TestCycleDTO get(Long id) {
         TestCycleDTO cycle = mapper.selectById(id);
         if (cycle == null) throw notFound("测试轮次不存在");
@@ -142,7 +200,10 @@ public class TestCycleService {
         if (mapper.selectCaseCount(id) == 0) {
             throw badRequest("测试轮次至少需要一条测试用例才能开始");
         }
-        mapper.updateStatus(id, "RUNNING", true, false);
+        if (mapper.updateStatus(id, "RUNNING", true, false) != 1) {
+            throw new BusinessException(HttpStatus.CONFLICT.value(),
+                    "测试轮次开始时状态已变化，请刷新后核对");
+        }
         return get(id);
     }
 

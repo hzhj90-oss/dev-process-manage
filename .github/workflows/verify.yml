@@ -53,6 +53,11 @@ jobs:
             runner/node-runner/package-lock.json
             runner/browser-runner/package-lock.json
 
+      - name: Validate Git source release hygiene (no secrets, no runtime files)
+        run: |
+          node --test scripts/release-worktree-audit.test.mjs
+          node scripts/audit-release-worktree.mjs --strict
+
       - name: Audit JavaScript lockfiles
         run: |
           npm audit --audit-level=moderate --package-lock-only --prefix frontend

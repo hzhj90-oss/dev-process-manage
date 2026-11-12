@@ -3,6 +3,8 @@ import http from './http'
 export const executionTaskApi = {
   page: params => http.get('/execution-tasks', { params }),
   get: id => http.get(`/execution-tasks/${id}`),
+  chatGptQueue: (limit = 20) => http.get('/execution-tasks/claimable/chatgpt', { params: { limit } }),
+  chatGptAudit: params => http.get('/execution-tasks/audit/chatgpt', { params }),
   createCycle: (cycleId, data) => http.post(`/test-cycles/${cycleId}/execution-tasks`, data, {
     headers: { 'Idempotency-Key': data.idempotencyKey }
   }),

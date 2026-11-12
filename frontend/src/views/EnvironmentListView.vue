@@ -12,6 +12,10 @@
     <el-alert type="warning" :closable="false" show-icon
       title="安全要求：这里只保存凭据引用，不保存密码、Token、Cookie 或 Authorization。环境地址和非敏感参数会进入测试轮次快照。" />
 
+    <el-alert v-if="listError" type="error" :closable="false" show-icon
+      style="margin: 16px 0" :title="'环境列表加载失败：' + listError">
+      <el-button link type="primary" @click="loadData">重试加载环境</el-button>
+    </el-alert>
     <el-card shadow="never" class="table-card">
       <div class="table-toolbar">
         <div><strong>环境列表</strong><span class="muted-count">共 {{ rows.length }} 个</span></div>
@@ -51,8 +55,10 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '配置测试环境' : '新增测试环境'" width="760px" top="6vh" destroy-on-close>
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="112px" status-icon>
+    <el-dialog v-model="dialogVisible" :title="editing ? '配置测试环境' : '新增测试环境'" width="760px" top="6vh" destroy-on-close
+      @close="invalidateEditor" :close-on-click-modal="!saving"
+      :close-on-press-escape="!saving" :show-close="!saving">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="112px" status-icon :disabled="saving">
         <div class="form-two-columns">
           <el-form-item label="环境编码" prop="environmentCode">
             <el-input v-model.trim="form.environmentCode" maxlength="32" :disabled="editing"
@@ -98,15 +104,16 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveEnvironment">保存配置</el-button>
+        <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="saving" @click="saveEnvironment">保存配置</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { createLatestRequest } from '../utils/latestRequest'
 // 页面组件仅在对应路由加载时引入，避免将全部 Element Plus 打入首屏。
 import { ElAlert, ElButton, ElCard, ElCheckbox, ElDialog, ElEmpty, ElForm, ElFormItem, ElInput, ElInputNumber, ElOption, ElSelect, ElSwitch, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
 import { environmentApi } from '../api/environments'
@@ -122,12 +129,16 @@ const authOptions = [
   { value: 'API_KEY', label: 'API Key' }, { value: 'CUSTOM', label: '自定义' }
 ]
 const rows = ref([])
+const listGate = createLatestRequest()
+const listError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const showInactive = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(false)
 const editingId = ref(null)
+const editorGate = createLatestRequest()
+const editorToken = ref(null)
 const formRef = ref()
 const form = reactive(emptyForm())
 
@@ -149,13 +160,29 @@ const rules = {
 }
 
 async function loadData() {
+  const token = listGate.begin()
   loading.value = true
+  listError.value = ''
   try {
-    rows.value = await environmentApi.list({ activeOnly: !showInactive.value })
-  } catch (error) { ElMessage.error(error.message) }
-  finally { loading.value = false }
+    const result = await environmentApi.list({ activeOnly: !showInactive.value })
+    if (!listGate.isCurrent(token)) return
+    if (!Array.isArray(result)) throw new Error('环境列表响应格式异常')
+    rows.value = result
+  } catch (error) {
+    if (!listGate.isCurrent(token)) return
+    rows.value = []
+    listError.value = error.message || '网络异常，请重试'
+  } finally {
+    if (listGate.isCurrent(token)) loading.value = false
+  }
+}
+function invalidateEditor() {
+  editorGate.invalidate()
+  editorToken.value = null
 }
 function openCreate() {
+  if (saving.value) return
+  editorToken.value = editorGate.begin()
   editing.value = false
   editingId.value = null
   Object.assign(form, emptyForm())
@@ -163,8 +190,10 @@ function openCreate() {
   formRef.value?.clearValidate()
 }
 function openEdit(row) {
+  if (saving.value || !Number.isSafeInteger(Number(row?.id)) || Number(row.id) <= 0) return
+  editorToken.value = editorGate.begin()
   editing.value = true
-  editingId.value = row.id
+  editingId.value = Number(row.id)
   Object.assign(form, {
     environmentCode: row.environmentCode,
     environmentName: row.environmentName,
@@ -178,34 +207,44 @@ function openEdit(row) {
   formRef.value?.clearValidate()
 }
 async function saveEnvironment() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
-  if (form.configJson?.trim()) {
-    try {
-      const parsed = JSON.parse(form.configJson)
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-        throw new Error('配置必须是 JSON 对象')
-      }
-    } catch (error) {
-      ElMessage.warning(error.message || '配置 JSON 格式不正确')
-      return
-    }
-  }
+  if (saving.value || !formRef.value || !dialogVisible.value) return
+  const session = editorToken.value
+  if (!session || !editorGate.isCurrent(session)) return
+  const wasEditing = editing.value
+  const targetId = editingId.value
   saving.value = true
   try {
-    const payload = { ...form }
-    if (payload.authType === 'NONE') payload.credentialRef = ''
-    if (editing.value) {
-      await environmentApi.update(editingId.value, payload)
-      ElMessage.success('环境配置已更新')
-    } else {
-      await environmentApi.create(payload)
-      ElMessage.success('环境创建成功')
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid || !dialogVisible.value || !editorGate.isCurrent(session)) return
+    if (wasEditing && (!Number.isSafeInteger(targetId) || targetId <= 0)) {
+      throw new Error('编辑环境已失效，请重新打开')
     }
-    dialogVisible.value = false
-    await loadData()
-  } catch (error) { ElMessage.error(error.message) }
-  finally { saving.value = false }
+    if (form.configJson?.trim()) {
+      try {
+        const parsed = JSON.parse(form.configJson)
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+          throw new Error('配置必须是 JSON 对象')
+        }
+      } catch (error) {
+        ElMessage.warning(error.message || '配置 JSON 格式不正确')
+        return
+      }
+    }
+    const payload = { ...form }
+    // NONE auth must never persist a credential reference from a prior edit.
+    if (payload.authType === 'NONE') payload.credentialRef = ''
+    if (wasEditing) await environmentApi.update(targetId, payload)
+    else await environmentApi.create(payload)
+    if (editorGate.isCurrent(session)) {
+      ElMessage.success(wasEditing ? '环境配置已更新' : '环境创建成功')
+      dialogVisible.value = false
+      await loadData()
+    }
+  } catch (error) {
+    if (editorGate.isCurrent(session)) ElMessage.error(error.message || '保存环境配置失败')
+  } finally {
+    saving.value = false
+  }
 }
 function typeLabel(value) { return typeOptions.find(item => item.value === value)?.label || value || '—' }
 function typeTag(value) {
@@ -214,6 +253,10 @@ function typeTag(value) {
 function authLabel(value) { return authOptions.find(item => item.value === value)?.label || value || '—' }
 
 onMounted(loadData)
+onUnmounted(() => {
+  listGate.invalidate()
+  editorGate.invalidate()
+})
 </script>
 
 <style scoped>

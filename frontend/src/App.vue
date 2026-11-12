@@ -16,6 +16,7 @@
         <router-link class="nav-item" to="/environments" active-class="active">测试环境</router-link>
         <router-link class="nav-item" to="/test-cycles" active-class="active">测试轮次</router-link>
         <router-link class="nav-item" to="/execution-tasks" active-class="active">执行任务</router-link>
+        <router-link class="nav-item" to="/ai-execution" active-class="active">ChatGPT 执行台</router-link>
         <router-link class="nav-item" to="/test-reports" active-class="active">测试报告</router-link>
       </nav>
       <div class="sidebar-footer">Local workspace · T14s</div>

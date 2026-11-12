@@ -9,6 +9,10 @@
       <el-button type="primary" @click="openCreate">新增版本</el-button>
     </div>
 
+    <el-alert v-if="projectsError" type="error" show-icon :closable="false" style="margin-bottom: 16px"
+      :title="'项目下拉选项加载失败：' + projectsError">
+      <el-button link type="primary" @click="loadProjects">重试加载项目</el-button>
+    </el-alert>
     <el-card shadow="never" class="filter-card">
       <div class="filter-row">
         <el-select v-model="filters.projectId" clearable filterable placeholder="全部项目" class="filter-project">
@@ -25,6 +29,10 @@
       </div>
     </el-card>
 
+    <el-alert v-if="listError" type="error" show-icon :closable="false" style="margin-bottom: 16px"
+      :title="'版本列表加载失败：' + listError">
+      <el-button link type="primary" @click="loadData">重试加载</el-button>
+    </el-alert>
     <el-card shadow="never" class="table-card">
       <div class="table-toolbar">
         <div>
@@ -62,8 +70,10 @@
         <el-table-column label="更新时间" width="170">
           <template #default="{ row }">{{ formatDate(row.updatedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="225" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="goRequirements(row)">查看需求</el-button>
+            <el-button link type="primary" @click="goCycles(row)">测试轮次</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           </template>
         </el-table-column>
@@ -75,11 +85,13 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑版本' : '新增版本'" width="680px">
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="115px">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑版本' : '新增版本'" width="680px"
+      @close="invalidateEditor" :close-on-click-modal="!saving"
+      :close-on-press-escape="!saving" :show-close="!saving">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="115px" :disabled="saving || projectsLoading || !!projectsError">
         <el-form-item label="所属项目" prop="projectId">
           <el-select v-model="form.projectId" filterable placeholder="请选择项目" style="width: 100%">
-            <el-option v-for="item in projects" :key="item.id"
+            <el-option v-for="item in projectEditOptions" :key="item.id"
               :label="item.projectCode + ' · ' + item.projectName" :value="item.id" />
           </el-select>
         </el-form-item>
@@ -109,21 +121,30 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving"
+          :disabled="saving || projectsLoading || !!projectsError" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 // 页面组件仅在对应路由加载时引入，避免将全部 Element Plus 打入首屏。
-import { ElButton, ElCard, ElDatePicker, ElDialog, ElForm, ElFormItem, ElIcon, ElInput, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElDatePicker, ElDialog, ElForm, ElFormItem, ElIcon, ElInput, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
+import { useRouter, useRoute } from 'vue-router'
+import { contextId, contextLink } from '../utils/contextNavigation'
 import { projectApi } from '../api/projects'
 import { versionApi } from '../api/versions'
+import { createLatestRequest } from '../utils/latestRequest'
+import { loadPagedOptions } from '../utils/pagedOptions'
 
+const router = useRouter()
+const route = useRoute()
+const listGate = createLatestRequest()
+const listError = ref('')
 const statusOptions = [
   { value: 'PLANNING', label: '规划中' },
   { value: 'DEVELOPING', label: '开发中' },
@@ -135,6 +156,9 @@ const loading = ref(false)
 const saving = ref(false)
 const rows = ref([])
 const projects = ref([])
+const projectsError = ref('')
+const projectsLoading = ref(false)
+const projectsGate = createLatestRequest()
 const total = ref(0)
 const pageNum = ref(1)
 const pageSize = ref(10)
@@ -142,6 +166,15 @@ const filters = reactive({ projectId: null, keyword: '', status: '' })
 const dialogVisible = ref(false)
 const editing = ref(false)
 const editingId = ref(null)
+const editorGate = createLatestRequest()
+const editorToken = ref(null)
+const originalProject = ref(null)
+const projectEditOptions = computed(() => {
+  const source = projects.value
+  const item = originalProject.value
+  return editing.value && item && !source.some(row => row.id === item.id)
+    ? [item, ...source] : source
+})
 const formRef = ref()
 
 const emptyForm = () => ({
@@ -160,16 +193,25 @@ const rules = {
 }
 
 async function loadProjects() {
+  const token = projectsGate.begin()
+  projectsLoading.value = true
+  projectsError.value = ''
   try {
-    const result = await projectApi.page({ status: 'ACTIVE', pageNum: 1, pageSize: 100 })
-    projects.value = result.list || []
+    const loaded = await loadPagedOptions(projectApi.page, { status: 'ACTIVE' })
+    if (projectsGate.isCurrent(token)) projects.value = loaded
   } catch (error) {
-    ElMessage.error(error.message)
+    if (!projectsGate.isCurrent(token)) return
+    projects.value = []
+    projectsError.value = error.message || '项目选项加载失败，请重试'
+  } finally {
+    if (projectsGate.isCurrent(token)) projectsLoading.value = false
   }
 }
 
 async function loadData() {
+  const requestId = listGate.begin()
   loading.value = true
+  listError.value = ''
   try {
     const result = await versionApi.page({
       projectId: filters.projectId || undefined,
@@ -178,15 +220,26 @@ async function loadData() {
       pageNum: pageNum.value,
       pageSize: pageSize.value
     })
+    if (!listGate.isCurrent(requestId)) return
     rows.value = result.list || []
     total.value = result.total || 0
   } catch (error) {
-    ElMessage.error(error.message)
+    if (!listGate.isCurrent(requestId)) return
+    rows.value = []
+    total.value = 0
+    listError.value = error.message || '网络异常，请重试'
   } finally {
-    loading.value = false
+    if (listGate.isCurrent(requestId)) loading.value = false
   }
 }
-
+function goRequirements(row) {
+  const target = contextLink('requirements', 'versionId', row?.id)
+  if (target) router.push(target)
+}
+function goCycles(row) {
+  const target = contextLink('test-cycles', 'versionId', row?.id)
+  if (target) router.push(target)
+}
 function search() {
   pageNum.value = 1
   loadData()
@@ -199,20 +252,39 @@ function resetFilters() {
   search()
 }
 
+function invalidateEditor() {
+  editorGate.invalidate()
+  editorToken.value = null
+}
 function openCreate() {
+  if (saving.value) return
+  if (projectsLoading.value || projectsError.value) {
+    ElMessage.warning('项目选项尚未完整加载，请重试后新建版本')
+    return
+  }
   if (!projects.value.length) {
     ElMessage.warning('请先在项目管理中创建一个启用的项目')
     return
   }
+  editorToken.value = editorGate.begin()
   editing.value = false
   editingId.value = null
+  originalProject.value = null
   Object.assign(form, emptyForm())
   dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 function openEdit(row) {
+  if (saving.value || !Number.isSafeInteger(Number(row?.id)) || Number(row.id) <= 0) return
+  editorToken.value = editorGate.begin()
   editing.value = true
-  editingId.value = row.id
+  editingId.value = Number(row.id)
+  // Existing versions can belong to inactive projects; keep the original
+  // project visible while offering only active projects as alternatives.
+  originalProject.value = {
+    id: row.projectId, projectCode: row.projectCode, projectName: row.projectName
+  }
   Object.assign(form, {
     projectId: row.projectId,
     versionNo: row.versionNo,
@@ -223,31 +295,42 @@ function openEdit(row) {
     description: row.description || ''
   })
   dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 async function save() {
-  if (!formRef.value) return
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
-  if (form.plannedStartDate && form.plannedReleaseDate &&
-      form.plannedStartDate > form.plannedReleaseDate) {
-    ElMessage.warning('计划开始日期不能晚于计划发布日期')
-    return
-  }
+  if (saving.value || !formRef.value || !dialogVisible.value
+      || projectsLoading.value || projectsError.value) return
+  const session = editorToken.value
+  if (!session || !editorGate.isCurrent(session)) return
+  const wasEditing = editing.value
+  const targetId = editingId.value
   saving.value = true
   try {
-    const payload = { ...form }
-    if (editing.value) {
-      await versionApi.update(editingId.value, payload)
-      ElMessage.success('版本更新成功')
-    } else {
-      await versionApi.create(payload)
-      ElMessage.success('版本创建成功')
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid || !dialogVisible.value || !editorGate.isCurrent(session)
+        || projectsLoading.value || projectsError.value) return
+    if (wasEditing && (!Number.isSafeInteger(targetId) || targetId <= 0)) {
+      throw new Error('编辑目标已失效，请重新打开版本')
     }
-    dialogVisible.value = false
-    await Promise.all([loadData(), loadProjects()])
+    if (!projectEditOptions.value.some(item => item.id === form.projectId)) {
+      throw new Error('所属项目选项已失效，请重新加载')
+    }
+    if (form.plannedStartDate && form.plannedReleaseDate &&
+        form.plannedStartDate > form.plannedReleaseDate) {
+      ElMessage.warning('计划开始日期不能晚于计划发布日期')
+      return
+    }
+    const payload = { ...form }
+    if (wasEditing) await versionApi.update(targetId, payload)
+    else await versionApi.create(payload)
+    if (editorGate.isCurrent(session)) {
+      ElMessage.success(wasEditing ? '版本更新成功' : '版本创建成功')
+      dialogVisible.value = false
+      await Promise.all([loadData(), loadProjects()])
+    }
   } catch (error) {
-    ElMessage.error(error.message)
+    if (editorGate.isCurrent(session)) ElMessage.error(error.message || '保存版本失败')
   } finally {
     saving.value = false
   }
@@ -271,8 +354,20 @@ function handleSizeChange() {
   loadData()
 }
 
+watch(() => route.query.projectId, value => {
+  const id = contextId(value)
+  if (filters.projectId === id) return
+  filters.projectId = id
+  pageNum.value = 1
+  loadData()
+})
 onMounted(async () => {
-  await loadProjects()
-  await loadData()
+  filters.projectId = contextId(route.query.projectId)
+  await Promise.all([loadProjects(), loadData()])
+})
+onUnmounted(() => {
+  listGate.invalidate()
+  projectsGate.invalidate()
+  editorGate.invalidate()
 })
 </script>

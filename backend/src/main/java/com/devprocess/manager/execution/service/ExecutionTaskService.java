@@ -62,6 +62,35 @@ public class ExecutionTaskService {
         return new PageResult<Map<String, Object>>(rows, total, page, size);
     }
 
+    /** Read-only task audit search. No original snapshots, event bodies or credentials leave SQL. */
+    public PageResult<Map<String, Object>> chatGptAudit(String status, String result,
+            String keyword, boolean recoveredOnly, int pageNum, int pageSize) {
+        String state = upper(status);
+        if (state != null && !ACTIVE_TASK_STATUSES.contains(state)
+                && !Arrays.asList("COMPLETED", "FAILED", "CANCELLED").contains(state)) {
+            throw badRequest("ChatGPT 审计任务状态不合法");
+        }
+        String outcome = upper(result);
+        if (outcome != null && !RESULTS.contains(outcome)) {
+            throw badRequest("ChatGPT 审计执行结果不合法");
+        }
+        String key = trim(keyword);
+        if (key != null && key.length() > 100) {
+            throw badRequest("ChatGPT 审计关键字最多 100 个字符");
+        }
+        if (pageNum < 1 || pageSize < 1 || pageSize > 50) {
+            throw badRequest("ChatGPT 审计分页参数不合法（每页最多 50 条）");
+        }
+        long offset = ((long) pageNum - 1L) * pageSize;
+        if (offset > Integer.MAX_VALUE) {
+            throw badRequest("ChatGPT 审计分页超出范围");
+        }
+        List<Map<String, Object>> rows = mapper.selectChatGptAudit(
+                state, outcome, key, recoveredOnly, (int) offset, pageSize);
+        long total = mapper.countChatGptAudit(state, outcome, key, recoveredOnly);
+        return new PageResult<Map<String, Object>>(rows, total, pageNum, pageSize);
+    }
+
     /**
      * Lists immutable AI execution snapshots that are ready for ChatGPT.
      * This is discovery only; start() performs the atomic task claim under row locks.
@@ -105,7 +134,10 @@ public class ExecutionTaskService {
     public Map<String, Object> createCycleTask(Long cycleId, ExecutionTaskCreateRequest request) {
         normalizeCreateRequest(request);
         Map<String, Object> cycle = mapper.selectCycleForUpdate(cycleId);
-        validateRunnableCycle(cycle);
+        if (cycle == null) throw notFound("测试轮次不存在");
+        // Replay an already committed request before enforcing the current RUNNING
+        // state. Its cycle may have completed since the original POST returned.
+        // Both lookup and mutation happen inside the same locked transaction.
         Map<String, Object> existing = mapper.selectByIdempotencyKey(cycleId, request.getIdempotencyKey());
         if (existing != null) {
             if (!"EXECUTE_CYCLE".equals(existing.get("taskType"))) {
@@ -113,6 +145,7 @@ public class ExecutionTaskService {
             }
             return get(numberValue(existing.get("id")));
         }
+        validateRunnableCycle(cycle);
 
         if (mapper.countActiveCycleTasks(cycleId) > 0) {
             throw conflict("当前轮次已有执行任务，不能重复创建整轮任务");
@@ -137,7 +170,9 @@ public class ExecutionTaskService {
             ExecutionTaskCreateRequest request) {
         normalizeCreateRequest(request);
         Map<String, Object> cycle = mapper.selectCycleForUpdate(cycleId);
-        validateRunnableCycle(cycle);
+        if (cycle == null) throw notFound("测试轮次不存在");
+        // The same original request must return the same task even when the
+        // cycle has since finished. A new key still requires a RUNNING cycle.
         Map<String, Object> existing = mapper.selectByIdempotencyKey(cycleId, request.getIdempotencyKey());
         if (existing != null) {
             if (!"EXECUTE_CASE".equals(existing.get("taskType"))
@@ -146,6 +181,7 @@ public class ExecutionTaskService {
             }
             return get(numberValue(existing.get("id")));
         }
+        validateRunnableCycle(cycle);
 
         if (mapper.countActiveCycleParents(cycleId) > 0) {
             throw conflict("当前轮次已有整轮执行任务，不能再单独执行用例");
@@ -221,7 +257,12 @@ public class ExecutionTaskService {
         mapper.insertExecution(execution);
         if (execution.getId() == null) throw new BusinessException(500, "创建执行记录失败");
 
-        mapper.updateCycleCase(cycleCaseId, "PENDING", null);
+        // A fresh task starts a new result lifecycle. Never carry an earlier
+        // PASS/FAIL/BLOCKED/SKIPPED into this pending attempt's cycle totals.
+        // The previous result remains auditable in dpm_test_execution.
+        if (mapper.resetCycleCaseForNewExecution(cycleCaseId) != 1) {
+            throw conflict("新执行任务已创建，但轮次用例状态未能重置，事务已回滚");
+        }
         insertEvent(execution.getId(), "TASK_CREATED", "task-created-" + taskId,
                 "执行任务已创建，等待执行", null, request.getRequestedBy());
     }
@@ -313,7 +354,7 @@ public class ExecutionTaskService {
                 || mapper.updateExecutionStarted(executionId, executor) != 1) {
             throw conflict("执行任务状态已变化，请刷新后重试");
         }
-        mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "RUNNING", null);
+        requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "RUNNING", null);
         insertEvent(executionId, "EXECUTION_STARTED", "execution-started-" + executionId,
                 "执行开始：" + actor, null, executor);
         refreshParent(taskId);
@@ -350,7 +391,7 @@ public class ExecutionTaskService {
                     || mapper.updateTaskWaitingHuman(taskId) != 1) {
                 throw conflict("任务状态已变化，无法转入人工介入");
             }
-            mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "WAITING_HUMAN", null);
+            requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "WAITING_HUMAN", null);
         } else {
             mapper.updateTaskHeartbeat(taskId);
         }
@@ -378,7 +419,7 @@ public class ExecutionTaskService {
                 || mapper.updateTaskCompleted(taskId) != 1) {
             throw conflict("执行记录状态已变化，结果未写入");
         }
-        mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "COMPLETED", result);
+        requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "COMPLETED", result);
         refreshCycleIfComplete(taskId);
         insertEvent(executionId, "EXECUTION_COMPLETED", "execution-completed-" + executionId,
                 "执行完成，结果：" + result, null, request.getExecutorName());
@@ -404,7 +445,7 @@ public class ExecutionTaskService {
                     || mapper.updateTaskPending(taskId) != 1) {
                 throw conflict("人工介入状态已变化，请刷新后重试");
             }
-            mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "PENDING", null);
+            requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "PENDING", null);
             insertEvent(numberValue(execution.get("id")), "HUMAN_CONFIRMED",
                     "human-confirmed-" + execution.get("id"), note, null, actor);
         } else if ("REJECTED".equals(decision)) {
@@ -412,7 +453,7 @@ public class ExecutionTaskService {
                     || mapper.updateTaskCompleted(taskId) != 1) {
                 throw conflict("人工介入状态已变化，请刷新后重试");
             }
-            mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "COMPLETED", "BLOCKED");
+            requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "COMPLETED", "BLOCKED");
             refreshCycleIfComplete(taskId);
             insertEvent(numberValue(execution.get("id")), "HUMAN_REJECTED",
                     "human-rejected-" + execution.get("id"), note, null, actor);
@@ -495,7 +536,7 @@ public class ExecutionTaskService {
             throw conflict("执行任务状态已变化，取消失败");
         }
         Long cycleCaseId = numberValue(task.get("cycleCaseId"));
-        if (cycleCaseId != null) mapper.updateCycleCase(cycleCaseId, "CANCELLED", null);
+        if (cycleCaseId != null) requireCycleCaseUpdate(cycleCaseId, "CANCELLED", null);
     }
 
     @Transactional
@@ -528,7 +569,7 @@ public class ExecutionTaskService {
         next.setCheckpointJson(stringValue(previous.get("checkpointJson")));
         mapper.insertExecution(next);
         if (next.getId() == null) throw new BusinessException(500, "创建恢复执行记录失败");
-        mapper.updateCycleCase(cycleCaseId, "PENDING", null);
+        requireCycleCaseUpdate(cycleCaseId, "PENDING", null);
         insertEvent(next.getId(), "EXECUTION_RESUMED",
                 "execution-resumed-" + next.getId(), "基于检查点恢复；上一次执行记录：" + previous.get("id"),
                 stringValue(previous.get("checkpointJson")), requestedBy);
@@ -557,7 +598,7 @@ public class ExecutionTaskService {
             if (mapper.updateExecutionInterrupted(numberValue(execution.get("id")), note) != 1) {
                 throw conflict("任务已标记待恢复，但执行记录状态更新失败，事务已回滚");
             }
-            mapper.updateCycleCase(numberValue(task.get("cycleCaseId")), "RECOVERY_REQUIRED", null);
+            requireCycleCaseUpdate(numberValue(task.get("cycleCaseId")), "RECOVERY_REQUIRED", null);
             insertEvent(numberValue(execution.get("id")), "EXECUTION_INTERRUPTED",
                     "execution-interrupted-" + execution.get("id"), note, null, "system");
             refreshParent(taskId);
@@ -579,6 +620,17 @@ public class ExecutionTaskService {
         Long parentId = mapper.selectParentTaskId(taskId);
         if (parentId != null && mapper.selectTaskForUpdate(parentId) == null) {
             throw conflict("执行任务的父任务不存在，无法安全更新状态");
+        }
+    }
+
+    /**
+     * Cycle case must change in the same transaction as task/execution state.
+     * A missing/unchanged row indicates an unexpected lifecycle mismatch;
+     * never commit a completed task with a stale cycle result.
+     */
+    private void requireCycleCaseUpdate(Long cycleCaseId, String status, String result) {
+        if (cycleCaseId == null || mapper.updateCycleCase(cycleCaseId, status, result) != 1) {
+            throw conflict("轮次用例状态同步失败，执行任务状态更新已回滚");
         }
     }
 

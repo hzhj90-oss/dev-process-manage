@@ -135,6 +135,65 @@ class ExecutionAttachmentServiceTest {
         assertThrows(BusinessException.class, () -> service.download(7L, 11L, 99L));
     }
 
+    @Test
+    void downloadMustVerifySha256AndAcceptUntamperedEvidence() throws Exception {
+        when(mapper.selectExecutionForUpdate(7L, 11L)).thenReturn(row("id", 11L));
+        byte[] original = "original evidence".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Path stored = tempDir.resolve("execution/7/clean.txt");
+        Files.createDirectories(stored.getParent());
+        Files.write(stored, original);
+        when(mapper.selectAttachmentById(101L)).thenReturn(row(
+                "id", 101L, "executionId", 11L, "relativePath", "execution/7/clean.txt",
+                "fileName", "clean.txt", "fileSize", (long) original.length,
+                "sha256", hash(original)));
+
+        ExecutionAttachmentFile result = service.download(7L, 11L, 101L);
+
+        assertEquals(original.length, result.getFileSize());
+        assertEquals("clean.txt", result.getFileName());
+    }
+
+    @Test
+    void downloadMustRejectSameLengthModifiedEvidence() throws Exception {
+        when(mapper.selectExecutionForUpdate(7L, 11L)).thenReturn(row("id", 11L));
+        byte[] original = "safe-file".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Path stored = tempDir.resolve("execution/7/changed.txt");
+        Files.createDirectories(stored.getParent());
+        Files.write(stored, "fake-file".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        when(mapper.selectAttachmentById(102L)).thenReturn(row(
+                "id", 102L, "executionId", 11L, "relativePath", "execution/7/changed.txt",
+                "fileName", "changed.txt", "fileSize", (long) original.length,
+                "sha256", hash(original)));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.download(7L, 11L, 102L));
+
+        assertEquals(500, error.getStatus());
+    }
+
+    @Test
+    void downloadMustRejectFileSizeMismatchEvenWithLegacyMetadata() throws Exception {
+        when(mapper.selectExecutionForUpdate(7L, 11L)).thenReturn(row("id", 11L));
+        Path stored = tempDir.resolve("execution/7/short.log");
+        Files.createDirectories(stored.getParent());
+        Files.write(stored, "tiny".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        when(mapper.selectAttachmentById(103L)).thenReturn(row(
+                "id", 103L, "executionId", 11L, "relativePath", "execution/7/short.log",
+                "fileName", "short.log", "fileSize", 99L));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.download(7L, 11L, 103L));
+
+        assertEquals(500, error.getStatus());
+    }
+
+    private String hash(byte[] bytes) throws Exception {
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder result = new StringBuilder();
+        for (byte value : digest) result.append(String.format("%02x", value & 255));
+        return result.toString();
+    }
+
     private Map<String, Object> row(Object... values) {
         Map<String, Object> result = new HashMap<String, Object>();
         for (int i = 0; i < values.length; i += 2) result.put(String.valueOf(values[i]), values[i + 1]);

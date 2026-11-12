@@ -160,10 +160,25 @@ public class ExecutionAttachmentService {
             String fileName = safeFileName(String.valueOf(attachment.get("fileName")));
             String mimeType = MIME_TYPES.get(extensionOf(fileName));
             if (mimeType == null) mimeType = "application/octet-stream";
+            long actualSize = Files.size(target);
             Object size = attachment.get("fileSize");
-            long fileSize = size instanceof Number ? ((Number) size).longValue()
-                    : Files.size(target);
-            return new ExecutionAttachmentFile(target, fileName, mimeType, fileSize);
+            if (size != null && (asLong(size) == null || asLong(size) != actualSize)) {
+                throw new BusinessException(500, "证据文件长度与保存记录不一致，已拒绝下载");
+            }
+            // New attachments persist SHA-256. Verify the stored bytes again
+            // before serving, so corrupted or replaced evidence is not silently
+            // presented as an original execution artifact. Legacy null hashes
+            // retain their existing size-only compatibility behavior.
+            Object savedHash = attachment.get("sha256");
+            if (savedHash != null) {
+                String expectedHash = String.valueOf(savedHash);
+                if (!expectedHash.matches("[a-f0-9]{64}")
+                        || !MessageDigest.isEqual(expectedHash.getBytes(StandardCharsets.US_ASCII),
+                            sha256(Files.readAllBytes(target)).getBytes(StandardCharsets.US_ASCII))) {
+                    throw new BusinessException(500, "证据文件摘要与保存记录不一致，已拒绝下载");
+                }
+            }
+            return new ExecutionAttachmentFile(target, fileName, mimeType, actualSize);
         } catch (IOException exception) {
             throw new BusinessException(500, "读取证据文件失败");
         }

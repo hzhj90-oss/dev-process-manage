@@ -43,6 +43,46 @@
     </div>
     <p v-if="loadError" role="alert" class="dashboard-load-error">{{ loadError }}</p>
 
+    <section class="quickstart-panel" aria-label="首次使用流程">
+      <div class="quickstart-head">
+        <h2>第一次使用？按这 6 步完成一个版本</h2>
+        <p>每一步都可直接进入已有模块。先登记开发内容，再选择环境和用例执行测试。</p>
+      </div>
+      <div class="quickstart-steps">
+        <router-link to="/projects" class="quickstart-step">
+          <span class="quickstart-number">1</span>
+          <strong>创建项目</strong>
+          <small>登记代码项目与主分支</small>
+        </router-link>
+        <router-link to="/versions" class="quickstart-step">
+          <span class="quickstart-number">2</span>
+          <strong>创建版本</strong>
+          <small>将多个需求组织到一次交付</small>
+        </router-link>
+        <router-link to="/requirements" class="quickstart-step">
+          <span class="quickstart-number">3</span>
+          <strong>需求与设计</strong>
+          <small>记录验收条件和详细设计修订</small>
+        </router-link>
+        <router-link to="/test-cases" class="quickstart-step">
+          <span class="quickstart-number">4</span>
+          <strong>编写用例</strong>
+          <small>从需求“新增用例”可自动关联</small>
+        </router-link>
+        <router-link to="/test-cycles" class="quickstart-step">
+          <span class="quickstart-number">5</span>
+          <strong>创建轮次</strong>
+          <small>选择测试环境、代码版本和用例</small>
+        </router-link>
+        <router-link to="/test-reports" class="quickstart-step">
+          <span class="quickstart-number">6</span>
+          <strong>执行与复核</strong>
+          <small>从轮次创建任务，完成后看报告</small>
+        </router-link>
+      </div>
+      <p class="quickstart-hint">提示：首次需要配置测试环境；脚本执行须先配置并启用对应脚本。创建测试轮次不会自动开始执行。</p>
+    </section>
+
     <div class="section-heading">
       <div>
         <h2>过程管理</h2>
@@ -148,3 +188,58 @@ async function loadStats() {
 
 onMounted(loadStats)
 </script>
+<style scoped>
+.quickstart-panel {
+  margin: 8px 0 26px;
+  border: 1px solid #e6eaf2;
+  border-radius: 12px;
+  padding: 22px 24px 17px;
+  background: #fff;
+}
+.quickstart-head h2 { color: #34425b; font-size: 17px; margin: 0 0 7px; }
+.quickstart-head p { font-size: 12px; color: #7c899b; margin: 0 0 18px; }
+.quickstart-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.quickstart-step {
+  display: grid;
+  grid-template-columns: 29px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 2px 9px;
+  padding: 12px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 8px;
+  border: 1px solid #ecf0f6;
+  background: #fbfcfe;
+}
+.quickstart-step:hover, .quickstart-step:focus-visible {
+  border-color: #8ba2f2;
+  background: #f4f6ff;
+  outline-offset: 2px;
+}
+.quickstart-number {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: #466bd3;
+  background: #eaf0ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.quickstart-step strong { font-size: 13px; color: #384864; }
+.quickstart-step small { font-size: 11px; line-height: 1.5; color: #8592a8; }
+.quickstart-hint { color: #77869a; font-size: 11px; line-height: 1.6; margin: 14px 0 0; }
+@media (max-width: 980px) {
+  .quickstart-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .quickstart-panel { padding: 17px 15px; }
+  .quickstart-steps { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

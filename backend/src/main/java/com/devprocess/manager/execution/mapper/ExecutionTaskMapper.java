@@ -12,6 +12,13 @@ public interface ExecutionTaskMapper {
     List<Map<String,Object>> selectPage(@Param("status") String status, @Param("cycleId") Long cycleId,
         @Param("keyword") String keyword, @Param("offset") int offset, @Param("pageSize") int pageSize);
     long countPage(@Param("status") String status, @Param("cycleId") Long cycleId, @Param("keyword") String keyword);
+    List<Map<String,Object>> selectChatGptAudit(@Param("status") String status,
+        @Param("result") String result, @Param("keyword") String keyword,
+        @Param("recoveredOnly") boolean recoveredOnly, @Param("offset") int offset,
+        @Param("pageSize") int pageSize);
+    long countChatGptAudit(@Param("status") String status,
+        @Param("result") String result, @Param("keyword") String keyword,
+        @Param("recoveredOnly") boolean recoveredOnly);
     Map<String,Object> selectCycleForUpdate(@Param("cycleId") Long cycleId);
     Long selectCycleIdByTaskId(@Param("taskId") Long taskId);
     List<Long> selectActiveCycleRootTaskIds(@Param("cycleId") Long cycleId);
@@ -39,6 +46,7 @@ public interface ExecutionTaskMapper {
     List<Map<String,Object>> selectClaimableTasks(@Param("runnerType") String runnerType, @Param("limit") int limit);
     int selectNextAttemptNo(@Param("cycleCaseId") Long cycleCaseId);
     int updateCycleCase(@Param("cycleCaseId") Long cycleCaseId, @Param("status") String status, @Param("result") String result);
+    int resetCycleCaseForNewExecution(@Param("cycleCaseId") Long cycleCaseId);
     int completeCycleIfAllCasesTerminal(@Param("cycleId") Long cycleId);
     int updateTaskStarted(@Param("id") Long id, @Param("executor") String executor);
     int updateTaskClaimed(@Param("id") Long id, @Param("runnerId") String runnerId,

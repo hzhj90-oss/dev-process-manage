@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 public interface TestCycleMapper {
+    // Read-only mismatch candidates: RUNNING cycles where every case is terminal.
+    List<Map<String, Object>> selectStatusDiagnostics(@Param("limit") int limit);
     List<TestCycleSummaryDTO> selectPage(@Param("versionId") Long versionId,
             @Param("environmentId") Long environmentId, @Param("status") String status,
             @Param("keyword") String keyword, @Param("offset") int offset,
@@ -13,6 +15,9 @@ public interface TestCycleMapper {
     long countPage(@Param("versionId") Long versionId, @Param("environmentId") Long environmentId,
             @Param("status") String status, @Param("keyword") String keyword);
     TestCycleDTO selectById(@Param("id") Long id);
+    // Chronologically previous finished test round of the same version; no cross-version comparison.
+    Long selectPreviousCompletedCycleId(@Param("versionId") Long versionId,
+            @Param("cycleNo") Integer cycleNo);
     Map<String, Object> selectCycleForUpdate(@Param("id") Long id);
     Long selectVersionIdForUpdate(@Param("versionId") Long versionId);
     Map<String, Object> selectEnvironmentForUpdate(@Param("environmentId") Long environmentId);

@@ -24,6 +24,38 @@ public class TestReportController {
         this.service = service;
     }
 
+    /** Read-only CSV summary, one row per case. Never returns raw execution bodies. */
+    /** Read-only, metadata-only case triage for the selected cycle. */
+    @GetMapping("/{id}/report/review")
+    public ResponseEntity<java.util.Map<String, Object>> review(@PathVariable Long id) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(service.review(id));
+    }
+
+    /** Read-only comparison to the nearest earlier COMPLETED round in this version. */
+    @GetMapping("/{id}/report/compare")
+    public ResponseEntity<java.util.Map<String, Object>> compare(@PathVariable Long id) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(service.compare(id));
+    }
+
+    @GetMapping("/{id}/report.csv")
+    public ResponseEntity<String> csv(@PathVariable Long id) {
+        String csv = service.generateCsv(id);
+        ContentDisposition disposition = ContentDisposition.attachment()
+                .filename("test-cycle-" + id + "-report.csv", StandardCharsets.UTF_8).build();
+        return ResponseEntity.ok()
+                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                .cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(csv);
+    }
+
     @GetMapping("/{id}/report")
     public ResponseEntity<String> report(@PathVariable Long id,
             @RequestParam(defaultValue = "false") boolean download) {

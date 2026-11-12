@@ -40,8 +40,17 @@ try {
     assert.equal(await page.locator('.module-grid a[href="#' + path + '"]').count(), 1,
       'Missing dashboard module navigation: ' + path);
   }
+  const guide = page.locator('.quickstart-panel');
+  await guide.getByText('第一次使用？按这 6 步完成一个版本').waitFor();
+  assert.equal(await guide.locator('.quickstart-steps a').count(), 6);
+  for (const path of ['/projects', '/versions', '/requirements', '/test-cases',
+    '/test-cycles', '/test-reports']) {
+    assert.equal(await guide.locator('a[href="#' + path + '"]').count(), 1,
+      'Missing quickstart navigation: ' + path);
+  }
+  assert.ok((await guide.innerText()).includes('创建测试轮次不会自动开始执行'));
   assert.equal(await page.locator('.dashboard-load-error').count(), 0);
-  console.log('DASHBOARD_LIVE_STATS_PASS counts=' + actual.join(',') + ' modules=8');
+  console.log('DASHBOARD_LIVE_STATS_PASS counts=' + actual.join(',') + ' modules=8 quickstart=6');
   await context.close();
 } finally {
   await browser.close();

@@ -1,5 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+# An intentional stop must not be undone by the periodic watchdog.
+$PauseFile = Join-Path $Root '.local\watchdog-http-runner.paused'
+Set-Content -LiteralPath $PauseFile -Value 'manual-stop' -Encoding ASCII
 $PidFile = Join-Path $Root 'logs\http-runner.pid'
 if (-not (Test-Path $PidFile)) { Write-Host 'HTTP Runner is not running.'; exit 0 }
 

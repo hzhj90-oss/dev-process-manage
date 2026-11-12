@@ -12,10 +12,12 @@ public interface TestCaseMapper {
     List<TestCaseDTO> selectPage(@Param("keyword") String keyword,
             @Param("status") String status, @Param("testType") String testType,
             @Param("priority") String priority, @Param("executionMode") String executionMode,
+            @Param("requirementId") Long requirementId,
             @Param("offset") int offset, @Param("pageSize") int pageSize);
     long countPage(@Param("keyword") String keyword, @Param("status") String status,
             @Param("testType") String testType, @Param("priority") String priority,
-            @Param("executionMode") String executionMode);
+            @Param("executionMode") String executionMode,
+            @Param("requirementId") Long requirementId);
     TestCaseDTO selectById(@Param("id") Long id);
     TestCaseDTO selectByIdForUpdate(@Param("id") Long id);
     int countByCaseNo(@Param("caseNo") String caseNo, @Param("excludeId") Long excludeId);
@@ -29,6 +31,10 @@ public interface TestCaseMapper {
             @Param("revisionId") Long revisionId);
     List<TestCaseRequirementDTO> selectRequirementsByCase(@Param("caseId") Long caseId);
     List<TestCaseRequirementDTO> selectAvailableRequirements(@Param("versionId") Long versionId);
+    List<TestCaseRequirementDTO> selectAvailableRequirementsPage(
+            @Param("versionId") Long versionId, @Param("offset") int offset,
+            @Param("pageSize") int pageSize);
+    long countAvailableRequirements(@Param("versionId") Long versionId);
     int countRequirementsByIds(@Param("ids") List<Long> ids);
     int deleteRequirementsByCase(@Param("caseId") Long caseId);
     int insertRequirementCase(@Param("requirementId") Long requirementId,

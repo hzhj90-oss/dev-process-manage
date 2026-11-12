@@ -28,6 +28,10 @@
       </div>
     </el-card>
 
+    <el-alert v-if="listError" type="error" show-icon :closable="false" style="margin-bottom: 16px"
+      :title="'脚本列表加载失败：' + listError">
+      <el-button link type="primary" @click="loadData">重试加载</el-button>
+    </el-alert>
     <el-card shadow="never" class="table-card">
       <div class="table-toolbar">
         <div><strong>脚本列表</strong><span class="muted-count">共 {{ total }} 条</span></div>
@@ -54,6 +58,7 @@
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-switch :model-value="row.enabled" :loading="switchingId === row.id"
+              :disabled="switchingId !== null || saving"
               inline-prompt active-text="启用" inactive-text="停用"
               @change="toggleEnabled(row, $event)" />
           </template>
@@ -77,8 +82,15 @@
     </el-card>
 
     <el-dialog v-model="editDialog" :title="editing ? '编辑脚本配置' : '新建脚本配置'"
-      width="860px" top="5vh" destroy-on-close>
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="112px" status-icon>
+      width="860px" top="5vh" destroy-on-close @close="invalidateEditor"
+      :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving">
+      <div v-if="editorLoading" v-loading="true" style="min-height: 80px" />
+      <el-alert v-if="editorError" type="error" show-icon :closable="false"
+        :title="'脚本详情加载失败：' + editorError">
+        <el-button link type="primary" @click="retryScriptDetail">重试读取脚本详情</el-button>
+      </el-alert>
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="112px" status-icon
+        :disabled="editorLoading || !!editorError || saving">
         <div class="form-two-columns">
           <el-form-item label="脚本编号" prop="scriptCode">
             <el-input v-model.trim="form.scriptCode" maxlength="64" placeholder="例如 API-LOGIN-CHECK" />
@@ -133,14 +145,19 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="editDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveScript">
+        <el-button :disabled="saving" @click="editDialog = false">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="editorLoading || !!editorError" @click="saveScript">
           {{ editing ? '保存并生成新修订' : '创建脚本' }}
         </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="historyDialog" title="脚本修订历史" width="920px" top="5vh" destroy-on-close>
+    <el-dialog v-model="historyDialog" title="脚本修订历史" width="920px" top="5vh" destroy-on-close
+      @close="invalidateHistory">
+      <el-alert v-if="historyError" type="error" show-icon :closable="false"
+        :title="'脚本修订历史加载失败：' + historyError">
+        <el-button link type="primary" @click="retryHistory">重试加载历史</el-button>
+      </el-alert>
       <div v-if="historyScript" class="history-case-heading">
         <strong>{{ historyScript.scriptCode }} · {{ historyScript.scriptName }}</strong>
         <span>当前修订：V{{ historyScript.revisionNo }}</span>
@@ -180,7 +197,8 @@
   </div>
 </template>
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { createLatestRequest } from '../utils/latestRequest'
 // 页面组件仅在对应路由加载时引入，避免将全部 Element Plus 打入首屏。
 import { ElAlert, ElButton, ElCard, ElDialog, ElEmpty, ElForm, ElFormItem, ElInput, ElOption, ElPagination, ElRadioButton, ElRadioGroup, ElSelect, ElSkeleton, ElSwitch, ElTable, ElTableColumn, ElTag, ElMessage, ElMessageBox, ElLoadingDirective as vLoading } from 'element-plus'
 import { testScriptApi } from '../api/testScripts'
@@ -193,6 +211,8 @@ const languageOptions = [
   { value: 'BROWSER', label: 'Browser / Playwright' }
 ]
 const loading = ref(false)
+const listGate = createLatestRequest()
+const listError = ref('')
 const saving = ref(false)
 const switchingId = ref(null)
 const rows = ref([])
@@ -203,12 +223,19 @@ const filters = reactive({ keyword: '', language: '', enabled: null })
 const editDialog = ref(false)
 const editing = ref(false)
 const editingId = ref(null)
+const editorGate = createLatestRequest()
+const editorToken = ref(null)
+const editorLoading = ref(false)
+const editorError = ref('')
 const formRef = ref()
 const historyDialog = ref(false)
 const historyScript = ref(null)
 const revisions = ref([])
 const selectedRevision = ref(null)
 const historyLoading = ref(false)
+const historyGate = createLatestRequest()
+const revisionGate = createLatestRequest()
+const historyError = ref('')
 const form = reactive(emptyForm())
 
 function emptyForm() {
@@ -243,7 +270,9 @@ const rules = {
 }
 
 async function loadData() {
+  const token = listGate.begin()
   loading.value = true
+  listError.value = ''
   try {
     const result = await testScriptApi.page({
       keyword: filters.keyword || undefined,
@@ -251,10 +280,21 @@ async function loadData() {
       enabled: filters.enabled === null ? undefined : filters.enabled,
       pageNum: pageNum.value, pageSize: pageSize.value
     })
-    rows.value = result.list || []
-    total.value = result.total || 0
-  } catch (error) { ElMessage.error(error.message) }
-  finally { loading.value = false }
+    if (!listGate.isCurrent(token)) return
+    if (!result || !Array.isArray(result.list)
+        || !Number.isSafeInteger(result.total) || result.total < 0) {
+      throw new Error('脚本列表响应格式异常')
+    }
+    rows.value = result.list
+    total.value = result.total
+  } catch (error) {
+    if (!listGate.isCurrent(token)) return
+    rows.value = []
+    total.value = 0
+    listError.value = error.message || '网络异常，请重试'
+  } finally {
+    if (listGate.isCurrent(token)) loading.value = false
+  }
 }
 function search() { pageNum.value = 1; loadData() }
 function resetFilters() {
@@ -273,7 +313,21 @@ function handleLanguageChange(language) {
   }
 }
 
+function invalidateEditor() {
+  editorGate.invalidate()
+  editorToken.value = null
+  editorLoading.value = false
+}
+function retryScriptDetail() {
+  if (editDialog.value && editing.value && editingId.value && !saving.value) {
+    openEdit({ id: editingId.value })
+  }
+}
 function openCreate() {
+  if (saving.value) return
+  editorToken.value = editorGate.begin()
+  editorLoading.value = false
+  editorError.value = ''
   editing.value = false
   editingId.value = null
   Object.assign(form, emptyForm())
@@ -281,12 +335,23 @@ function openCreate() {
   formRef.value?.clearValidate()
 }
 async function openEdit(row) {
+  if (saving.value) return
+  const id = Number(row?.id)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  const token = editorGate.begin()
+  editorToken.value = token
+  editorLoading.value = true
+  editorError.value = ''
   editing.value = true
-  editingId.value = row.id
+  editingId.value = id
   editDialog.value = true
   Object.assign(form, emptyForm())
   try {
-    const detail = await testScriptApi.get(row.id)
+    const detail = await testScriptApi.get(id)
+    if (!editorGate.isCurrent(token) || !editDialog.value) return
+    if (Number(detail?.id) !== id || !detail.scriptCode || !detail.scriptName) {
+      throw new Error('脚本详情与当前选择不一致，请重新读取')
+    }
     Object.assign(form, {
       scriptCode: detail.scriptCode, scriptName: detail.scriptName,
       scriptLanguage: detail.scriptLanguage, runtimeVersion: detail.runtimeVersion || '',
@@ -298,70 +363,128 @@ async function openEdit(row) {
     })
     formRef.value?.clearValidate()
   } catch (error) {
-    ElMessage.error(error.message)
-    editDialog.value = false
+    if (editorGate.isCurrent(token) && editDialog.value) {
+      editorError.value = error.message || '加载脚本详情失败'
+    }
+  } finally {
+    if (editorGate.isCurrent(token)) editorLoading.value = false
   }
 }
 async function saveScript() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
-  if (form.argumentsJson?.trim()) {
-    try {
-      const parsed = JSON.parse(form.argumentsJson)
-      if (parsed === null || typeof parsed !== 'object') throw new Error('参数必须为 JSON 对象或数组')
-    } catch (error) {
-      ElMessage.warning(error.message || '参数 JSON 格式不正确')
-      return
-    }
-  }
+  if (saving.value) return
+  const session = editorToken.value
+  if (!editDialog.value || !session || !editorGate.isCurrent(session)
+      || editorLoading.value || editorError.value) return
+  // Lock from the first click, including async field validation.
   saving.value = true
   try {
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid || !editorGate.isCurrent(session) || !editDialog.value
+        || editorLoading.value || editorError.value) return
+    if (form.argumentsJson?.trim()) {
+      try {
+        const parsed = JSON.parse(form.argumentsJson)
+        if (parsed === null || typeof parsed !== 'object') throw new Error('参数必须为 JSON 对象或数组')
+      } catch (error) {
+        ElMessage.warning(error.message || '参数 JSON 格式不正确')
+        return
+      }
+    }
     const payload = { ...form }
     if (payload.sourceType === 'INLINE') payload.sourcePath = ''
     else payload.sourceContent = ''
     if (editing.value) {
       await testScriptApi.update(editingId.value, payload)
-      ElMessage.success('脚本已更新，并生成新的修订版本')
+      if (editorGate.isCurrent(session)) ElMessage.success('脚本已更新，并生成新的修订版本')
     } else {
       await testScriptApi.create(payload)
-      ElMessage.success('脚本配置创建成功')
+      if (editorGate.isCurrent(session)) ElMessage.success('脚本配置创建成功')
     }
-    editDialog.value = false
-    await loadData()
-  } catch (error) { ElMessage.error(error.message) }
-  finally { saving.value = false }
+    if (editorGate.isCurrent(session)) {
+      editDialog.value = false
+      await loadData()
+    }
+  } catch (error) {
+    if (editorGate.isCurrent(session)) ElMessage.error(error.message || '保存脚本失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 async function toggleEnabled(row, enabled) {
-  switchingId.value = row.id
+  const id = Number(row?.id)
+  if (switchingId.value !== null || saving.value
+      || !Number.isSafeInteger(id) || id <= 0
+      || typeof enabled !== 'boolean' || row.enabled === enabled) return
+  // Lock synchronously. The switch is controlled by server data, never optimistic.
+  switchingId.value = id
   try {
-    await testScriptApi.setEnabled(row.id, enabled)
+    await testScriptApi.setEnabled(id, enabled)
     ElMessage.success(enabled ? '脚本已启用' : '脚本已停用')
-    await loadData()
   } catch (error) {
-    ElMessage.error(error.message)
+    ElMessage.error(error.message || '切换脚本状态失败')
+  } finally {
+    // Reconcile server state on both success and failure before accepting a retry.
     await loadData()
-  } finally { switchingId.value = null }
+    switchingId.value = null
+  }
 }
 
+function invalidateHistory() {
+  historyGate.invalidate()
+  revisionGate.invalidate()
+  historyLoading.value = false
+}
+function retryHistory() {
+  if (historyDialog.value && historyScript.value) void openHistory(historyScript.value)
+}
 async function openHistory(row) {
-  historyScript.value = row
+  const id = Number(row?.id)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  const token = historyGate.begin()
+  revisionGate.invalidate()
+  historyScript.value = { ...row, id }
   revisions.value = []
   selectedRevision.value = null
+  historyError.value = ''
   historyDialog.value = true
   historyLoading.value = true
   try {
-    revisions.value = await testScriptApi.revisions(row.id)
-    if (revisions.value.length) await selectRevision(revisions.value[0])
-  } catch (error) { ElMessage.error(error.message) }
-  finally { historyLoading.value = false }
+    const list = await testScriptApi.revisions(id)
+    if (!historyGate.isCurrent(token) || !historyDialog.value) return
+    if (!Array.isArray(list)) throw new Error('修订历史响应格式不正确')
+    revisions.value = list
+    if (list.length) await selectRevision(list[0])
+  } catch (error) {
+    if (historyGate.isCurrent(token) && historyDialog.value) {
+      historyError.value = error.message || '读取脚本修订历史失败'
+    }
+  } finally {
+    if (historyGate.isCurrent(token) && (!revisions.value.length || historyError.value)) {
+      historyLoading.value = false
+    }
+  }
 }
 async function selectRevision(item) {
+  if (!historyDialog.value || !historyScript.value) return
+  const scriptId = historyScript.value.id
+  const token = revisionGate.begin()
   selectedRevision.value = null
+  historyError.value = ''
   historyLoading.value = true
-  try { selectedRevision.value = await testScriptApi.getRevision(historyScript.value.id, item.id) }
-  catch (error) { ElMessage.error(error.message) }
-  finally { historyLoading.value = false }
+  try {
+    const next = await testScriptApi.getRevision(scriptId, item.id)
+    if (!revisionGate.isCurrent(token) || !historyDialog.value
+        || historyScript.value?.id !== scriptId) return
+    if (Number(next?.id) !== Number(item.id)) throw new Error('修订详情与当前选择不一致')
+    selectedRevision.value = next
+  } catch (error) {
+    if (revisionGate.isCurrent(token) && historyDialog.value) {
+      historyError.value = error.message || '读取修订详情失败'
+    }
+  } finally {
+    if (revisionGate.isCurrent(token)) historyLoading.value = false
+  }
 }
 function languageLabel(value) {
   return languageOptions.find(item => item.value === value)?.label || value || '—'
@@ -369,6 +492,11 @@ function languageLabel(value) {
 function formatDate(value) { return value ? String(value).replace('T', ' ').slice(0, 16) : '—' }
 
 onMounted(loadData)
+onUnmounted(() => {
+  listGate.invalidate()
+  invalidateEditor()
+  invalidateHistory()
+})
 </script>
 
 <style scoped>

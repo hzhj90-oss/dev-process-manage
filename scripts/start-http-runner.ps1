@@ -45,4 +45,6 @@ if ($process.HasExited) {
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     throw "HTTP Runner exited during startup. Check logs\http-runner.stderr.log."
 }
+# Explicit successful start re-enables watchdog recovery for this service.
+Remove-Item -LiteralPath (Join-Path $Root '.local\watchdog-http-runner.paused') -Force -ErrorAction SilentlyContinue
 Write-Host "HTTP Runner started. PID=$($process.Id)"

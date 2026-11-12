@@ -18,6 +18,11 @@ public class RunnerController {
         this.service = service;
     }
 
+    @GetMapping("/status")
+    public Map<String, Object> status() {
+        return service.runnerStatus();
+    }
+
     @PostMapping("/claim")
     public Map<String, Object> claim(
             @RequestHeader(value = "X-DPM-Runner-Token", required = false) String token,

@@ -153,6 +153,51 @@ class RunnerLeaseMySqlIT {
         }
     }
 
+
+    @Test
+    void freshExecutionMustClearStalePassAndPreserveHistoricalBoundary() throws Exception {
+        try (SqlSession session = sqlSessionFactory.openSession(true)) {
+            ExecutionTaskMapper mapper = session.getMapper(ExecutionTaskMapper.class);
+            insertCycle(session, 6L, "RUNNING");
+            insertCycleCase(session, 61L, 6L, "PENDING");
+            insertCycleCase(session, 62L, 6L, "PENDING");
+            assertEquals(1, mapper.updateCycleCase(61L, "COMPLETED", "PASS"));
+            assertEquals(1, mapper.updateCycleCase(62L, "COMPLETED", "FAIL"));
+
+            // A fresh task makes the new attempt the active result source:
+            // the old PASS remains in execution history, not in current counters.
+            assertEquals(1, mapper.resetCycleCaseForNewExecution(61L));
+            try (Statement statement = session.getConnection().createStatement();
+                 java.sql.ResultSet result = statement.executeQuery(
+                         "SELECT execution_status, latest_result FROM " + cycleCaseTableName +
+                         " WHERE id = 61")) {
+                assertTrue(result.next());
+                assertEquals("PENDING", result.getString("execution_status"));
+                assertEquals("NOT_RUN", result.getString("latest_result"));
+            }
+            assertEquals(0, mapper.completeCycleIfAllCasesTerminal(6L),
+                    "A previously PASS case must not complete the cycle while rerunning.");
+
+            assertEquals(1, mapper.updateCycleCase(61L, "RUNNING", null));
+            try (Statement statement = session.getConnection().createStatement();
+                 java.sql.ResultSet result = statement.executeQuery(
+                         "SELECT latest_result FROM " + cycleCaseTableName + " WHERE id = 61")) {
+                assertTrue(result.next());
+                assertEquals("NOT_RUN", result.getString(1),
+                        "Status transitions must not resurrect an earlier result.");
+            }
+
+            assertEquals(1, mapper.updateCycleCase(61L, "COMPLETED", "BLOCKED"));
+            try (Statement statement = session.getConnection().createStatement();
+                 java.sql.ResultSet result = statement.executeQuery(
+                         "SELECT latest_result FROM " + cycleCaseTableName + " WHERE id = 61")) {
+                assertTrue(result.next());
+                assertEquals("BLOCKED", result.getString(1));
+            }
+            assertEquals(1, mapper.completeCycleIfAllCasesTerminal(6L));
+        }
+    }
+
     @Test
     void cycleCompletionMustIgnoreAbortedAndEmptyCycles() throws Exception {
         try (SqlSession session = sqlSessionFactory.openSession(true)) {

@@ -9,6 +9,10 @@
       <el-button type="primary" @click="openCreate">新增需求</el-button>
     </div>
 
+    <el-alert v-if="versionsError" type="error" show-icon :closable="false" style="margin-bottom: 16px"
+      :title="'版本下拉选项加载失败：' + versionsError">
+      <el-button link type="primary" @click="loadVersions">重试加载版本</el-button>
+    </el-alert>
     <el-card shadow="never" class="filter-card">
       <div class="filter-row">
         <el-select v-model="filters.versionId" clearable filterable placeholder="全部版本" class="filter-project">
@@ -28,6 +32,10 @@
       </div>
     </el-card>
 
+    <el-alert v-if="listError" type="error" show-icon :closable="false" style="margin-bottom: 16px"
+      :title="'需求列表加载失败：' + listError">
+      <el-button link type="primary" @click="loadData">重试加载</el-button>
+    </el-alert>
     <el-card shadow="never" class="table-card">
       <div class="table-toolbar">
         <div><strong>需求列表</strong><span class="muted-count">共 {{ total }} 条需求</span></div>
@@ -62,12 +70,19 @@
             </el-button>
           </template>
         </el-table-column>
-        <el-table-column prop="linkedCaseCount" label="关联用例" width="90" align="center" />
+        <el-table-column label="关联用例" width="110" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary"
+              :title="'查看需求 ' + row.requirementNo + ' 的关联测试用例'"
+              @click="goRequirementCases(row)">{{ row.linkedCaseCount || 0 }} 条</el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="ownerName" label="负责人" width="100" />
-        <el-table-column label="操作" width="145" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="openDesigns(row)">设计</el-button>
+            <el-button link type="success" @click="goCreateRequirementCase(row)">新增用例</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -78,8 +93,11 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="requirementDialog" :title="editing ? '编辑需求' : '新增需求'" width="760px">
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="105px">
+    <el-dialog v-model="requirementDialog" :title="editing ? '编辑需求' : '新增需求'" width="760px"
+      @close="invalidateRequirementEditor" :close-on-click-modal="!saving"
+      :close-on-press-escape="!saving" :show-close="!saving">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="105px"
+        :disabled="saving || versionsLoading || !!versionsError">
         <el-form-item label="所属版本" prop="versionId">
           <el-select v-model="form.versionId" filterable :disabled="editing" placeholder="请选择版本" style="width:100%">
             <el-option v-for="item in versions" :key="item.id" :value="item.id"
@@ -125,20 +143,27 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="requirementDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveRequirement">保存</el-button>
+        <el-button :disabled="saving" @click="requirementDialog = false">取消</el-button>
+        <el-button type="primary" :loading="saving"
+          :disabled="versionsLoading || !!versionsError" @click="saveRequirement">保存</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="designDialog" :title="selectedRequirement ? selectedRequirement.requirementNo + ' · 详细设计' : '详细设计'"
-      width="1000px" top="5vh">
-      <div class="design-layout">
+      width="1000px" top="5vh" @close="invalidateDesign"
+      :close-on-click-modal="!designSaving" :close-on-press-escape="!designSaving" :show-close="!designSaving">
+      <el-alert v-if="designError" type="error" show-icon :closable="false"
+        :title="'详细设计加载失败：' + designError">
+        <el-button link type="primary" @click="retryDesigns">重试加载详细设计</el-button>
+      </el-alert>
+      <div class="design-layout" v-loading="designLoading">
         <div class="design-history">
           <div class="design-history-head">
             <strong>设计修订</strong>
-            <el-button size="small" type="primary" @click="openNewDesign">新增修订</el-button>
+            <el-button size="small" type="primary" :disabled="designLoading || !!designError || designSaving"
+              @click="openNewDesign">新增修订</el-button>
           </div>
-          <el-empty v-if="!designs.length" description="暂无详细设计" :image-size="65" />
+          <el-empty v-if="!designLoading && !designError && !designs.length" description="暂无详细设计" :image-size="65" />
           <button v-for="item in designs" :key="item.id"
             class="design-revision" :class="{ selected: selectedDesign && selectedDesign.id === item.id }"
             @click="selectDesign(item)">
@@ -161,12 +186,14 @@
           <el-empty v-else description="选择左侧修订版本，或新增详细设计" />
         </div>
       </div>
-      <template #footer><el-button @click="designDialog = false">关闭</el-button></template>
+      <template #footer><el-button :disabled="designSaving" @click="designDialog = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="newDesignDialog" title="新增详细设计修订" width="760px" append-to-body>
+    <el-dialog v-model="newDesignDialog" title="新增详细设计修订" width="760px" append-to-body
+      @close="invalidateNewDesign" :close-on-click-modal="!designSaving"
+      :close-on-press-escape="!designSaving" :show-close="!designSaving">
       <el-alert title="保存后将生成新的修订版本，既有设计版本不会被覆盖。" type="info" :closable="false" class="design-alert" />
-      <el-form ref="designFormRef" :model="designForm" :rules="designRules" label-width="105px">
+      <el-form ref="designFormRef" :model="designForm" :rules="designRules" label-width="105px" :disabled="designSaving">
         <div class="form-two-columns">
           <el-form-item label="设计类型">
             <el-select v-model="designForm.designType" style="width:100%">
@@ -194,20 +221,38 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="newDesignDialog = false">取消</el-button>
-        <el-button type="primary" :loading="designSaving" @click="saveDesign">保存新修订</el-button>
+        <el-button :disabled="designSaving" @click="newDesignDialog = false">取消</el-button>
+        <el-button type="primary" :loading="designSaving" :disabled="designLoading || !!designError"
+          @click="saveDesign">保存新修订</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { contextLink } from '../utils/contextNavigation'
+import { contextId } from '../utils/contextNavigation'
 // 页面组件仅在对应路由加载时引入，避免将全部 Element Plus 打入首屏。
 import { ElAlert, ElButton, ElCard, ElDialog, ElEmpty, ElForm, ElFormItem, ElInput, ElInputNumber, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
 import { versionApi } from '../api/versions'
 import { requirementApi } from '../api/requirements'
+import { createLatestRequest } from '../utils/latestRequest'
+import { loadPagedOptions } from '../utils/pagedOptions'
 
+const route = useRoute()
+const router = useRouter()
+function goRequirementCases(row) {
+  const target = contextLink('test-cases', 'requirementId', row?.id)
+  if (target) router.push(target)
+}
+function goCreateRequirementCase(row) {
+  const target = contextLink('test-cases', 'requirementId', row?.id)
+  if (target) router.push({ ...target, query: { ...target.query, create: '1' } })
+}
+const listGate = createLatestRequest()
+const listError = ref('')
 const statusOptions = [
   { value: 'DRAFT', label: '草稿' }, { value: 'CONFIRMED', label: '已确认' },
   { value: 'DEVELOPING', label: '开发中' }, { value: 'COMPLETED', label: '已完成' },
@@ -234,9 +279,19 @@ const designStatusOptions = [
 ]
 const loading = ref(false)
 const saving = ref(false)
+const requirementEditorGate = createLatestRequest()
+const requirementEditorToken = ref(null)
+const versionsGate = createLatestRequest()
+const versionsLoading = ref(false)
 const designSaving = ref(false)
+const designGate = createLatestRequest()
+const designToken = ref(null)
+const designLoading = ref(false)
+const designError = ref('')
+const newDesignRequirementId = ref(null)
 const rows = ref([])
 const versions = ref([])
+const versionsError = ref('')
 const total = ref(0)
 const pageNum = ref(1)
 const pageSize = ref(10)
@@ -273,14 +328,25 @@ const designRules = {
 }
 
 async function loadVersions() {
+  const token = versionsGate.begin()
+  versionsLoading.value = true
+  versionsError.value = ''
   try {
-    const result = await versionApi.page({ pageNum: 1, pageSize: 100 })
-    versions.value = result.list || []
-  } catch (error) { ElMessage.error(error.message) }
+    const result = await loadPagedOptions(versionApi.page)
+    if (versionsGate.isCurrent(token)) versions.value = result
+  } catch (error) {
+    if (!versionsGate.isCurrent(token)) return
+    versions.value = []
+    versionsError.value = error.message || '版本选项加载失败，请重试'
+  } finally {
+    if (versionsGate.isCurrent(token)) versionsLoading.value = false
+  }
 }
 
 async function loadData() {
+  const requestId = listGate.begin()
   loading.value = true
+  listError.value = ''
   try {
     const result = await requirementApi.page({
       versionId: filters.versionId || undefined,
@@ -289,10 +355,17 @@ async function loadData() {
       priority: filters.priority || undefined,
       pageNum: pageNum.value, pageSize: pageSize.value
     })
+    if (!listGate.isCurrent(requestId)) return
     rows.value = result.list || []
     total.value = result.total || 0
-  } catch (error) { ElMessage.error(error.message) }
-  finally { loading.value = false }
+  } catch (error) {
+    if (!listGate.isCurrent(requestId)) return
+    rows.value = []
+    total.value = 0
+    listError.value = error.message || '网络异常，请重试'
+  } finally {
+    if (listGate.isCurrent(requestId)) loading.value = false
+  }
 }
 function search() { pageNum.value = 1; loadData() }
 function resetFilters() {
@@ -302,17 +375,26 @@ function resetFilters() {
   filters.priority = ''
   search()
 }
+function invalidateRequirementEditor() {
+  requirementEditorGate.invalidate()
+  requirementEditorToken.value = null
+}
 function openCreate() {
-  if (!versions.value.length) {
-    ElMessage.warning('请先创建一个版本')
+  if (saving.value) return
+  if (versionsLoading.value || versionsError.value || !versions.value.length) {
+    ElMessage.warning('请先完整加载版本选项，或创建一个版本')
     return
   }
+  requirementEditorToken.value = requirementEditorGate.begin()
   editing.value = false
   editingId.value = null
   Object.assign(form, emptyForm())
   requirementDialog.value = true
+  formRef.value?.clearValidate()
 }
 function openEdit(row) {
+  if (saving.value) return
+  requirementEditorToken.value = requirementEditorGate.begin()
   editing.value = true
   editingId.value = row.id
   Object.assign(form, {
@@ -322,36 +404,93 @@ function openEdit(row) {
     sortOrder: row.sortOrder || 0
   })
   requirementDialog.value = true
+  formRef.value?.clearValidate()
 }
 async function saveRequirement() {
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
+  if (saving.value) return
+  const token = requirementEditorToken.value
+  const id = editingId.value
+  const isEdit = editing.value
+  if (!requirementDialog.value || !token || !requirementEditorGate.isCurrent(token)
+      || versionsLoading.value || versionsError.value || !versions.value.length) return
+  // Lock before async validation: rapid clicks must never create duplicate requirements.
   saving.value = true
   try {
-    if (editing.value) {
-      await requirementApi.update(editingId.value, { ...form })
-      ElMessage.success('需求更新成功')
-    } else {
-      await requirementApi.create({ ...form })
-      ElMessage.success('需求创建成功')
-    }
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid || !requirementEditorGate.isCurrent(token) || !requirementDialog.value
+        || editing.value !== isEdit || editingId.value !== id) return
+    const payload = { ...form }
+    if (isEdit) await requirementApi.update(id, payload)
+    else await requirementApi.create(payload)
+    if (!requirementEditorGate.isCurrent(token) || !requirementDialog.value) return
+    ElMessage.success(isEdit ? '需求更新成功' : '需求创建成功')
     requirementDialog.value = false
     await loadData()
-  } catch (error) { ElMessage.error(error.message) }
-  finally { saving.value = false }
+  } catch (error) {
+    if (requirementEditorGate.isCurrent(token)) ElMessage.error(error.message || '保存需求失败')
+  } finally {
+    saving.value = false
+  }
+}
+function invalidateDesign() {
+  designGate.invalidate()
+  designToken.value = null
+  designLoading.value = false
+  designError.value = ''
+  if (!designSaving.value) {
+    newDesignDialog.value = false
+    newDesignRequirementId.value = null
+  }
+}
+function retryDesigns() {
+  if (designDialog.value && selectedRequirement.value && !designSaving.value) {
+    void openDesigns(selectedRequirement.value)
+  }
 }
 async function openDesigns(row) {
-  selectedRequirement.value = row
+  if (designSaving.value) return
+  const id = Number(row?.id)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  const token = designGate.begin()
+  designToken.value = token
+  selectedRequirement.value = { ...row, id }
   selectedDesign.value = null
   designs.value = []
+  designError.value = ''
+  designLoading.value = true
+  newDesignDialog.value = false
+  newDesignRequirementId.value = null
   designDialog.value = true
   try {
-    designs.value = await requirementApi.designs(row.id)
-    if (designs.value.length) selectedDesign.value = designs.value[0]
-  } catch (error) { ElMessage.error(error.message) }
+    const list = await requirementApi.designs(id)
+    if (!designGate.isCurrent(token) || !designDialog.value
+        || selectedRequirement.value?.id !== id) return
+    if (!Array.isArray(list)) throw new Error('详细设计列表响应格式异常')
+    designs.value = list
+    selectedDesign.value = list[0] || null
+  } catch (error) {
+    if (designGate.isCurrent(token) && designDialog.value) {
+      designError.value = error.message || '读取详细设计失败'
+    }
+  } finally {
+    if (designGate.isCurrent(token)) designLoading.value = false
+  }
 }
-function selectDesign(item) { selectedDesign.value = item }
+function selectDesign(item) {
+  if (!designLoading.value && !designError.value && designDialog.value) {
+    selectedDesign.value = item
+  }
+}
+function invalidateNewDesign() {
+  if (!designSaving.value) newDesignRequirementId.value = null
+}
 function openNewDesign() {
+  if (!designDialog.value || !selectedRequirement.value || designLoading.value
+      || designError.value || designSaving.value || !designGate.isCurrent(designToken.value)) {
+    ElMessage.warning('请先完成当前需求的详细设计加载')
+    return
+  }
+  newDesignRequirementId.value = selectedRequirement.value.id
   Object.assign(designForm, {
     designType: 'GENERAL', title: '', contentMarkdown: '',
     attachmentPath: '', status: 'DRAFT', authorName: ''
@@ -359,18 +498,34 @@ function openNewDesign() {
   newDesignDialog.value = true
 }
 async function saveDesign() {
-  const valid = await designFormRef.value.validate().catch(() => false)
-  if (!valid || !selectedRequirement.value) return
+  if (designSaving.value || !designDialog.value || !newDesignDialog.value
+      || designLoading.value || designError.value || !selectedRequirement.value
+      || !newDesignRequirementId.value
+      || selectedRequirement.value.id !== newDesignRequirementId.value) return
+  const session = designToken.value
+  const requirementId = newDesignRequirementId.value
+  if (!designGate.isCurrent(session)) return
+  // A revision is immutable: lock before asynchronous validation to avoid duplicates.
   designSaving.value = true
   try {
-    const created = await requirementApi.createDesign(selectedRequirement.value.id, { ...designForm })
-    designs.value.unshift(created)
-    selectedDesign.value = created
-    newDesignDialog.value = false
-    ElMessage.success('已创建新的详细设计修订')
-    await loadData()
-  } catch (error) { ElMessage.error(error.message) }
-  finally { designSaving.value = false }
+    const valid = await designFormRef.value?.validate().catch(() => false)
+    if (!valid || !designGate.isCurrent(session) || !designDialog.value
+        || !newDesignDialog.value || selectedRequirement.value?.id !== requirementId
+        || newDesignRequirementId.value !== requirementId) return
+    const created = await requirementApi.createDesign(requirementId, { ...designForm })
+    if (designGate.isCurrent(session) && designDialog.value
+        && selectedRequirement.value?.id === requirementId) {
+      designs.value.unshift(created)
+      selectedDesign.value = created
+      newDesignDialog.value = false
+      ElMessage.success('已创建新的详细设计修订')
+      await loadData()
+    }
+  } catch (error) {
+    if (designGate.isCurrent(session)) ElMessage.error(error.message || '保存详细设计修订失败')
+  } finally {
+    designSaving.value = false
+  }
 }
 function statusLabel(value) { return statusOptions.find(x => x.value === value)?.label || value || '—' }
 function statusType(value) {
@@ -387,8 +542,22 @@ function designStatusLabel(value) { return designStatusOptions.find(x => x.value
 function formatDate(value) { return value ? String(value).replace('T', ' ').slice(0, 16) : '—' }
 function handleSizeChange() { pageNum.value = 1; loadData() }
 
+watch(() => route.query.versionId, value => {
+  const id = contextId(value)
+  if (filters.versionId === id) return
+  filters.versionId = id
+  pageNum.value = 1
+  loadData()
+})
 onMounted(async () => {
+  filters.versionId = contextId(route.query.versionId)
   await loadVersions()
   await loadData()
+})
+onUnmounted(() => {
+  listGate.invalidate()
+  versionsGate.invalidate()
+  requirementEditorGate.invalidate()
+  designGate.invalidate()
 })
 </script>

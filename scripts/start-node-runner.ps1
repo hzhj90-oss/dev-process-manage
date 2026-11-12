@@ -48,4 +48,6 @@ if ($process.HasExited) {
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     throw "Node Runner exited during startup. Check logs\node-runner.stderr.log."
 }
+# Explicit successful start re-enables watchdog recovery for this service.
+Remove-Item -LiteralPath (Join-Path $Root '.local\watchdog-node-runner.paused') -Force -ErrorAction SilentlyContinue
 Write-Host "Node Runner started. PID=$($process.Id)"

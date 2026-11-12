@@ -41,6 +41,257 @@ public class TestReportService {
         this.objectMapper = objectMapper;
     }
 
+
+    /**
+     * A compact, Excel-readable export of the immutable cycle case snapshots and
+     * execution metadata. Deliberately excludes source, snapshots, event bodies,
+     * request payloads and logs, even when the underlying task API has them.
+     */
+
+    /**
+     * Minimal failure-triage view for one test cycle.
+     * Never returns the raw task/execution maps, snapshots, logs, or checkpoints.
+     */
+    /**
+     * Compare the current cycle to the nearest older COMPLETED cycle in its version.
+     * Uses immutable testCaseId, never case number/title, to avoid false matches after edits.
+     * This is a GET-only projection; it never updates test results or creates attempts.
+     */
+    public Map<String, Object> compare(Long cycleId) {
+        TestCycleDTO current = cycleService.get(cycleId);
+        TestCycleDTO previous = cycleService.previousCompleted(current);
+        Map<String, Object> response = new LinkedHashMap<String, Object>();
+        response.put("cycleId", current.getId());
+        response.put("cycleName", sanitizeText(current.getCycleName()));
+        response.put("cycleNo", current.getCycleNo());
+        response.put("cycleStatus", current.getStatus());
+        response.put("versionId", current.getVersionId());
+        response.put("previousCycleId", previous == null ? null : previous.getId());
+        response.put("previousCycleName", previous == null ? null : sanitizeText(previous.getCycleName()));
+        response.put("previousCycleNo", previous == null ? null : previous.getCycleNo());
+        // Comparison does not imply causality: expose enough immutable context
+        // to distinguish different environments and deployments, never credentials.
+        response.put("environmentId", current.getEnvironmentId());
+        response.put("environmentName", sanitizeText(current.getEnvironmentName()));
+        response.put("codeVersion", sanitizeText(current.getCodeVersion()));
+        response.put("gitCommit", sanitizeText(current.getGitCommit()));
+        response.put("previousEnvironmentId", previous == null ? null : previous.getEnvironmentId());
+        response.put("previousEnvironmentName", previous == null ? null
+                : sanitizeText(previous.getEnvironmentName()));
+        response.put("previousCodeVersion", previous == null ? null
+                : sanitizeText(previous.getCodeVersion()));
+        response.put("previousGitCommit", previous == null ? null
+                : sanitizeText(previous.getGitCommit()));
+        response.put("environmentChanged", previous == null
+                || previous.getEnvironmentId() == null || current.getEnvironmentId() == null
+                ? null : !current.getEnvironmentId().equals(previous.getEnvironmentId()));
+        Boolean codeChanged = null;
+        if (previous != null && current.getCodeVersion() != null
+                && !current.getCodeVersion().trim().isEmpty()
+                && previous.getCodeVersion() != null
+                && !previous.getCodeVersion().trim().isEmpty()) {
+            codeChanged = !current.getCodeVersion().trim().equals(previous.getCodeVersion().trim());
+            if (current.getGitCommit() != null && !current.getGitCommit().trim().isEmpty()
+                    && previous.getGitCommit() != null && !previous.getGitCommit().trim().isEmpty()) {
+                codeChanged = codeChanged
+                        || !current.getGitCommit().trim().equals(previous.getGitCommit().trim());
+            }
+        }
+        response.put("codeVersionChanged", codeChanged);
+
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (String key : new String[] {"FIXED", "REGRESSION", "STILL_FAIL",
+                "STILL_PASS", "FIRST_PASS", "CHANGED", "NEW_CASE", "REMOVED_CASE"}) {
+            counts.put(key, 0);
+        }
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
+        response.put("counts", counts);
+        response.put("rows", rows);
+        response.put("total", 0);
+        if (previous == null) return response;
+
+        if (!java.util.Objects.equals(previous.getVersionId(), current.getVersionId())
+                || previous.getCycleNo() == null || current.getCycleNo() == null
+                || previous.getCycleNo().intValue() >= current.getCycleNo().intValue()
+                || !"COMPLETED".equals(previous.getStatus())) {
+            throw new IllegalStateException("上一轮测试与当前轮次不匹配");
+        }
+        Map<Long, TestCycleCaseDTO> earlier = new LinkedHashMap<Long, TestCycleCaseDTO>();
+        if (previous.getCases() != null) for (TestCycleCaseDTO item : previous.getCases()) {
+            if (item.getTestCaseId() != null && item.getTestCaseId() > 0) {
+                if (earlier.put(item.getTestCaseId(), item) != null) {
+                    throw new IllegalStateException("上一轮用例存在重复关联");
+                }
+            }
+        }
+        java.util.Set<Long> currentIds = new java.util.HashSet<Long>();
+        if (current.getCases() != null) for (TestCycleCaseDTO item : current.getCases()) {
+            Long caseId = item.getTestCaseId();
+            if (caseId != null && caseId > 0 && !currentIds.add(caseId)) {
+                throw new IllegalStateException("本轮用例存在重复关联");
+            }
+            TestCycleCaseDTO old = caseId == null ? null : earlier.get(caseId);
+            String before = old == null ? null : normalizedResult(old.getLatestResult());
+            String now = normalizedResult(item.getLatestResult());
+            String change = old == null ? "NEW_CASE" : compareResult(before, now);
+            counts.put(change, counts.get(change) + 1);
+            rows.add(compareRow(caseId, item, before, now, change));
+        }
+        if (previous.getCases() != null) for (TestCycleCaseDTO item : previous.getCases()) {
+            Long caseId = item.getTestCaseId();
+            if (caseId != null && currentIds.contains(caseId)) continue;
+            counts.put("REMOVED_CASE", counts.get("REMOVED_CASE") + 1);
+            rows.add(compareRow(caseId, item, normalizedResult(item.getLatestResult()),
+                    null, "REMOVED_CASE"));
+        }
+        response.put("total", rows.size());
+        return response;
+    }
+
+    private Map<String, Object> compareRow(Long testCaseId, TestCycleCaseDTO item,
+            String previousResult, String currentResult, String change) {
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("testCaseId", testCaseId);
+        row.put("caseNo", sanitizeText(item.getCaseNo()));
+        row.put("title", sanitizeText(item.getTitle()));
+        row.put("previousResult", previousResult);
+        row.put("currentResult", currentResult);
+        row.put("change", change);
+        return row;
+    }
+
+    private String normalizedResult(String result) {
+        for (String value : new String[] {"PASS", "FAIL", "BLOCKED", "SKIPPED"}) {
+            if (value.equals(result)) return value;
+        }
+        return "NOT_RUN";
+    }
+
+    private String compareResult(String before, String after) {
+        boolean beforeIssue = "FAIL".equals(before) || "BLOCKED".equals(before);
+        boolean afterIssue = "FAIL".equals(after) || "BLOCKED".equals(after);
+        if (beforeIssue && "PASS".equals(after)) return "FIXED";
+        if ("PASS".equals(before) && afterIssue) return "REGRESSION";
+        if (beforeIssue && afterIssue) return "STILL_FAIL";
+        if ("PASS".equals(before) && "PASS".equals(after)) return "STILL_PASS";
+        if ("PASS".equals(after)) return "FIRST_PASS";
+        return "CHANGED";
+    }
+
+    public Map<String, Object> review(Long cycleId) {
+        TestCycleDTO cycle = cycleService.get(cycleId);
+        Map<Long, List<Map<String, Object>>> attemptsByCase = collectAttempts(cycleId);
+        List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (String result : new String[] {"PASS", "FAIL", "BLOCKED", "SKIPPED", "NOT_RUN"}) {
+            counts.put(result, 0);
+        }
+        List<TestCycleCaseDTO> cases = cycle.getCases();
+        if (cases != null) {
+            for (TestCycleCaseDTO item : cases) {
+                List<Map<String, Object>> records = attemptsByCase.get(item.getId());
+                int attemptCount = records == null ? 0 : records.size();
+                Long latestId = null;
+                Long latestTaskId = null;
+                Map<String, Object> latestExecution = null;
+                if (records != null) {
+                    for (Map<String, Object> record : records) {
+                        Object rawExecution = record.get("execution");
+                        if (!(rawExecution instanceof Map)) continue;
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> execution = (Map<String, Object>) rawExecution;
+                        Long id = asLong(execution.get("id"));
+                        if (id != null && (latestId == null || id.longValue() > latestId.longValue())) {
+                            latestId = id;
+                            latestTaskId = asLong(record.get("taskId"));
+                            latestExecution = execution;
+                        }
+                    }
+                }
+                String result = item.getLatestResult();
+                if (!counts.containsKey(result)) result = "NOT_RUN";
+                counts.put(result, counts.get(result) + 1);
+
+                Map<String, Object> row = new LinkedHashMap<String, Object>();
+                row.put("cycleCaseId", item.getId());
+                row.put("caseNo", sanitizeText(item.getCaseNo()));
+                row.put("title", sanitizeText(item.getTitle()));
+                row.put("executionMode", item.getExecutionMode());
+                row.put("executionStatus", item.getExecutionStatus());
+                row.put("latestResult", result);
+                row.put("attemptCount", attemptCount);
+                row.put("taskId", latestTaskId);
+                row.put("executionId", latestId);
+                row.put("runnerType", latestExecution == null ? null : latestExecution.get("runnerType"));
+                row.put("attemptStatus", latestExecution == null ? null : latestExecution.get("executionStatus"));
+                rows.add(row);
+            }
+        }
+        Map<String, Object> response = new LinkedHashMap<String, Object>();
+        response.put("cycleId", cycle.getId());
+        response.put("cycleName", sanitizeText(cycle.getCycleName()));
+        response.put("cycleStatus", cycle.getStatus());
+        response.put("counts", counts);
+        response.put("total", rows.size());
+        response.put("rows", rows);
+        return response;
+    }
+
+    public String generateCsv(Long cycleId) {
+        TestCycleDTO cycle = cycleService.get(cycleId);
+        Map<Long, List<Map<String, Object>>> attemptsByCase = collectAttempts(cycleId);
+        StringBuilder csv = new StringBuilder(8192);
+        csv.append('\uFEFF');
+        appendCsvRow(csv, "项目", "版本", "测试轮次", "轮次状态", "环境",
+                "用例编号", "用例名称", "执行模式", "执行状态", "最终结果",
+                "执行次数", "最近执行ID", "最近Runner", "最近执行状态");
+        List<TestCycleCaseDTO> cases = cycle.getCases();
+        if (cases == null) return csv.toString();
+        for (TestCycleCaseDTO item : cases) {
+            List<Map<String, Object>> attempts = attemptsByCase.get(item.getId());
+            int totalAttempts = attempts == null ? 0 : attempts.size();
+            Map<String, Object> latest = null;
+            long latestId = 0L;
+            if (attempts != null) {
+                for (Map<String, Object> attempt : attempts) {
+                    Object raw = attempt.get("execution");
+                    if (!(raw instanceof Map)) continue;
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> execution = (Map<String, Object>) raw;
+                    Long candidate = asLong(execution.get("id"));
+                    if (candidate != null && candidate.longValue() > latestId) {
+                        latestId = candidate.longValue();
+                        latest = execution;
+                    }
+                }
+            }
+            appendCsvRow(csv, cycle.getProjectName(), cycle.getVersionNo(),
+                    cycle.getCycleName(), cycle.getStatus(), cycle.getEnvironmentName(),
+                    item.getCaseNo(), item.getTitle(), item.getExecutionMode(),
+                    item.getExecutionStatus(), item.getLatestResult(),
+                    totalAttempts, latestId == 0L ? null : latestId,
+                    latest == null ? null : latest.get("runnerType"),
+                    latest == null ? null : latest.get("executionStatus"));
+        }
+        return csv.toString();
+    }
+
+    private void appendCsvRow(StringBuilder csv, Object... values) {
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) csv.append(',');
+            String text = values[i] == null ? "" : sanitizeText(String.valueOf(values[i]));
+            // Keep spreadsheet cells bounded and neutralize multiline/control data.
+            text = text.replaceAll("[\\p{Cntrl}]", " ");
+            if (text.length() > 512) text = text.substring(0, 512);
+            // A quoted CSV field is still interpreted as a formula by Excel/LibreOffice.
+            if (text.matches("(?s)^\\s*[=+\\-@＝＋－＠].*")) {
+                text = "'" + text;
+            }
+            csv.append('"').append(text.replace("\"", "\"\"")).append('"');
+        }
+        csv.append("\r\n");
+    }
+
     public String generateHtml(Long cycleId) {
         return generateHtml(cycleId, "");
     }

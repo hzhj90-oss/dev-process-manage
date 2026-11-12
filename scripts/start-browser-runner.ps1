@@ -50,4 +50,6 @@ if ($process.HasExited) {
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     throw "Browser Runner exited during startup. Check logs\browser-runner.stderr.log."
 }
+# Explicit successful start re-enables watchdog recovery for this service.
+Remove-Item -LiteralPath (Join-Path $Root '.local\watchdog-browser-runner.paused') -Force -ErrorAction SilentlyContinue
 Write-Host "Browser Runner started. PID=$($process.Id)"

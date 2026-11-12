@@ -9,6 +9,19 @@ let checked = 0
 
 for (const file of readdirSync(viewDir).filter(name => name.endsWith('.vue'))) {
   const source = readFileSync(join(viewDir, file), 'utf8')
+  const scriptIndex = source.indexOf('<script setup>')
+  if (scriptIndex >= 0) {
+    // Guard against accidentally deleting a handler while editing loadData().
+    // Only check simple named template callbacks; inline expressions are intentionally excluded.
+    const template = source.slice(0, scriptIndex)
+    const script = source.slice(scriptIndex)
+    const events = /@(?:click|change|current-change|size-change|keyup\.enter|closed)\s*=\s*"([A-Za-z_$][\w$]*)(?:\(|")/g
+    for (const event of template.matchAll(events)) {
+      const handler = event[1]
+      const declaration = new RegExp('\\b(?:function|const|let|var)\\s+' + handler + '\\b')
+      if (!declaration.test(script)) problems.push(file + ': missing callback ' + handler)
+    }
+  }
   const tags = new Set([...source.matchAll(/<el-([a-z][a-z0-9-]*)\b/g)].map(match => match[1]))
   if (!tags.size) continue
   checked++

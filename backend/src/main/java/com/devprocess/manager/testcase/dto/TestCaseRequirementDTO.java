@@ -2,6 +2,7 @@ package com.devprocess.manager.testcase.dto;
 
 public class TestCaseRequirementDTO {
     private Long requirementId;
+    private Long versionId;
     private String requirementNo;
     private String title;
     private String projectCode;
@@ -10,6 +11,8 @@ public class TestCaseRequirementDTO {
     private String coverageType;
 
     public Long getRequirementId() { return requirementId; }
+    public Long getVersionId() { return versionId; }
+    public void setVersionId(Long value) { this.versionId = value; }
     public void setRequirementId(Long value) { this.requirementId = value; }
     public String getRequirementNo() { return requirementNo; }
     public void setRequirementNo(String value) { this.requirementNo = value; }

@@ -43,6 +43,7 @@ public class RunnerService {
 
     private final ExecutionTaskMapper mapper;
     private final ObjectMapper objectMapper;
+    private final RunnerPresenceRegistry presence = new RunnerPresenceRegistry();
     @Value("${execution.runner.token:}")
     private String sharedToken;
     @Value("${execution.runner.lease-seconds:60}")
@@ -66,8 +67,9 @@ public class RunnerService {
         String runnerType = upper(request.getRunnerType());
         if (runnerType == null) runnerType = "HTTP";
         if (!Arrays.asList("HTTP", "NODE", "BROWSER").contains(runnerType)) {
-            throw badRequest("当前只允许 HTTP 或 NODE Runner 领取任务");
+            throw badRequest("当前只允许 HTTP、NODE 或 BROWSER Runner 领取任务");
         }
+        presence.markSeen(runnerType, runnerId);
         // 每次领取只竞争一个候选，避免同一事务持有多个轮次锁时出现跨轮次锁顺序反转。
         List<Map<String, Object>> candidates = mapper.selectClaimableTasks(runnerType, 1);
         for (Map<String, Object> candidate : candidates) {
@@ -141,10 +143,15 @@ public class RunnerService {
         response.put("claimed", false);
         return response;
     }
+    public Map<String, Object> runnerStatus() {
+        return presence.snapshot();
+    }
+
     @Transactional
     public Map<String, Object> heartbeat(Long taskId, String runnerId, String leaseToken) {
         LeaseContext context = lockAndValidateLease(taskId, runnerId, leaseToken);
         renewLease(taskId, context.runnerId, context.leaseHash);
+        presence.markSeen(context.runnerType, context.runnerId);
         Map<String, Object> response = new LinkedHashMap<String, Object>();
         response.put("ok", true);
         response.put("leaseSeconds", leaseSeconds());
@@ -176,7 +183,7 @@ public class RunnerService {
                     || mapper.updateTaskWaitingHuman(taskId) != 1) {
                 throw conflict("任务状态已变化，无法转入人工介入");
             }
-            mapper.updateCycleCase(context.cycleCaseId, "WAITING_HUMAN", null);
+            requireCycleCaseUpdate(context.cycleCaseId, "WAITING_HUMAN", null);
             refreshParent(taskId);
         }
         return success();
@@ -197,7 +204,7 @@ public class RunnerService {
                 || mapper.updateTaskCompleted(taskId) != 1) {
             throw conflict("Runner 完成任务时状态已变化，结果未写入");
         }
-        mapper.updateCycleCase(context.cycleCaseId, "COMPLETED", result);
+        requireCycleCaseUpdate(context.cycleCaseId, "COMPLETED", result);
         mapper.completeCycleIfAllCasesTerminal(context.cycleId);
         insertEvent(context.executionId, "EXECUTION_COMPLETED", "runner-completed-" + context.executionId,
                 "Runner 执行完成，结果：" + result, null, context.runnerId);
@@ -222,7 +229,7 @@ public class RunnerService {
                 || mapper.updateTaskFailed(taskId, context.runnerId, context.leaseHash, error) != 1) {
             throw conflict("Runner 标记任务失败时状态已变化");
         }
-        mapper.updateCycleCase(context.cycleCaseId, "COMPLETED", "BLOCKED");
+        requireCycleCaseUpdate(context.cycleCaseId, "COMPLETED", "BLOCKED");
         mapper.completeCycleIfAllCasesTerminal(context.cycleId);
         insertEvent(context.executionId, "RUNNER_FAILED", "runner-failed-" + context.executionId,
                 "Runner 执行引擎失败", writeJson(java.util.Collections.singletonMap("error", error)),
@@ -256,7 +263,8 @@ public class RunnerService {
         Long executionId = numberValue(execution.get("id"));
         Long cycleCaseId = numberValue(task.get("cycleCaseId"));
         if (executionId == null || cycleCaseId == null) throw conflict("执行任务关联数据不完整");
-        return new LeaseContext(id, sha256(token), executionId, cycleCaseId, cycleId);
+        return new LeaseContext(id, sha256(token), executionId, cycleCaseId, cycleId,
+                upper(stringValue(execution.get("runnerType"))));
     }
 
     private void renewLease(Long taskId, String runnerId, String leaseHash) {
@@ -323,6 +331,16 @@ public class RunnerService {
                 : waiting ? "WAITING_HUMAN" : pending ? "PENDING"
                 : failed ? "FAILED" : cancelled ? "CANCELLED" : "COMPLETED";
         mapper.updateTaskAggregate(parentId, aggregate);
+    }
+
+    /**
+     * The attempt and cycle-case summary must advance atomically.
+     * Missing or unchanged cycle-case rows mean the transaction cannot commit.
+     */
+    private void requireCycleCaseUpdate(Long cycleCaseId, String status, String result) {
+        if (cycleCaseId == null || mapper.updateCycleCase(cycleCaseId, status, result) != 1) {
+            throw conflict("轮次用例状态同步失败，Runner 执行事务已回滚");
+        }
     }
 
     private void insertEvent(Long executionId, String type, String key,
@@ -422,13 +440,15 @@ public class RunnerService {
 
     private static class LeaseContext {
         private final String runnerId;
+        private final String runnerType;
         private final String leaseHash;
         private final Long executionId;
         private final Long cycleCaseId;
         private final Long cycleId;
         private LeaseContext(String runnerId, String leaseHash, Long executionId,
-                Long cycleCaseId, Long cycleId) {
+                Long cycleCaseId, Long cycleId, String runnerType) {
             this.runnerId = runnerId;
+            this.runnerType = runnerType;
             this.leaseHash = leaseHash;
             this.executionId = executionId;
             this.cycleCaseId = cycleCaseId;

@@ -14,7 +14,7 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 $null = Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/api/health" -TimeoutSec 5
 
 $Routes = @('', 'projects', 'versions', 'requirements', 'test-cases',
-    'test-scripts', 'environments', 'test-cycles', 'execution-tasks', 'test-reports')
+    'test-scripts', 'environments', 'test-cycles', 'execution-tasks', 'ai-execution', 'test-reports')
 $TempRoot = Join-Path $env:TEMP ('dpm-frontend-smoke-' + [Guid]::NewGuid().ToString('N'))
 $Profile = Join-Path $TempRoot 'profile'
 New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null

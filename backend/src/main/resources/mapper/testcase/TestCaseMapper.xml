@@ -8,6 +8,13 @@
             <if test="testType != null and testType != ''">AND cr.test_type = #{testType}</if>
             <if test="priority != null and priority != ''">AND cr.priority = #{priority}</if>
             <if test="executionMode != null and executionMode != ''">AND cr.execution_mode = #{executionMode}</if>
+            <if test="requirementId != null">
+                AND EXISTS (
+                    SELECT 1 FROM dpm_requirement_case rc_filter
+                    WHERE rc_filter.test_case_id = c.id
+                      AND rc_filter.requirement_id = #{requirementId}
+                )
+            </if>
             <if test="keyword != null and keyword != ''">
                 AND (c.case_no LIKE CONCAT('%', #{keyword}, '%')
                   OR c.title LIKE CONCAT('%', #{keyword}, '%')
@@ -114,7 +121,7 @@
         WHERE cr.test_case_id = #{caseId} AND cr.id = #{revisionId}
     </select>
     <select id="selectRequirementsByCase" resultType="com.devprocess.manager.testcase.dto.TestCaseRequirementDTO">
-        SELECT r.id AS requirement_id, r.requirement_no, r.title,
+        SELECT r.id AS requirement_id, r.version_id AS version_id, r.requirement_no, r.title,
                p.project_code, p.project_name, v.version_no, rc.coverage_type
         FROM dpm_requirement_case rc
         INNER JOIN dpm_requirement r ON r.id = rc.requirement_id
@@ -132,6 +139,25 @@
         WHERE 1 = 1
         <if test="versionId != null">AND r.version_id = #{versionId}</if>
         ORDER BY p.project_code, v.version_no, r.sort_order, r.requirement_no
+    </select>
+    <select id="countAvailableRequirements" resultType="long">
+        SELECT COUNT(1)
+        FROM dpm_requirement r
+        WHERE 1 = 1
+        <if test="versionId != null">AND r.version_id = #{versionId}</if>
+    </select>
+    <select id="selectAvailableRequirementsPage"
+            resultType="com.devprocess.manager.testcase.dto.TestCaseRequirementDTO">
+        SELECT r.id AS requirement_id, r.requirement_no, r.title,
+               p.project_code, p.project_name, v.version_no
+        FROM dpm_requirement r
+        INNER JOIN dpm_version v ON v.id = r.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        WHERE 1 = 1
+        <if test="versionId != null">AND r.version_id = #{versionId}</if>
+        ORDER BY p.project_code, v.version_no, r.sort_order,
+                 r.requirement_no, r.id
+        LIMIT #{offset}, #{pageSize}
     </select>
     <select id="countRequirementsByIds" resultType="int">
         SELECT COUNT(DISTINCT id) FROM dpm_requirement

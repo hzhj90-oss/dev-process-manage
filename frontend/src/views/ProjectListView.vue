@@ -22,6 +22,10 @@
       </div>
     </el-card>
 
+    <el-alert v-if="listError" type="error" show-icon :closable="false" class="list-error-alert"
+      :title="'项目列表加载失败：' + listError">
+      <el-button link type="primary" @click="loadData">重试加载</el-button>
+    </el-alert>
     <el-card shadow="never" class="table-card">
       <div class="table-toolbar">
         <div>
@@ -53,8 +57,9 @@
         <el-table-column label="更新时间" width="170">
           <template #default="{ row }">{{ formatDate(row.updatedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="185" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" @click="goVersions(row)">查看版本</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           </template>
         </el-table-column>
@@ -66,8 +71,10 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑项目' : '新增项目'" width="650px">
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="105px">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑项目' : '新增项目'" width="650px"
+      @close="invalidateEditor" :close-on-click-modal="!saving"
+      :close-on-press-escape="!saving" :show-close="!saving">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="105px" :disabled="saving">
         <el-form-item label="项目编码" prop="projectCode">
           <el-input v-model.trim="form.projectCode" maxlength="64" show-word-limit
             placeholder="例如：SPV-GS" :disabled="editing" />
@@ -93,20 +100,26 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 // 页面组件仅在对应路由加载时引入，避免将全部 Element Plus 打入首屏。
-import { ElButton, ElCard, ElDialog, ElForm, ElFormItem, ElIcon, ElInput, ElOption, ElPagination, ElRadio, ElRadioGroup, ElSelect, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElDialog, ElForm, ElFormItem, ElIcon, ElInput, ElOption, ElPagination, ElRadio, ElRadioGroup, ElSelect, ElTable, ElTableColumn, ElTag, ElMessage, ElLoadingDirective as vLoading } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
+import { contextLink } from '../utils/contextNavigation'
 import { projectApi } from '../api/projects'
+import { createLatestRequest } from '../utils/latestRequest'
 
+const router = useRouter()
+const listGate = createLatestRequest()
+const listError = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const rows = ref([])
@@ -116,6 +129,9 @@ const pageSize = ref(10)
 const filters = reactive({ keyword: '', status: '' })
 const dialogVisible = ref(false)
 const editing = ref(false)
+const editingId = ref(null)
+const editorGate = createLatestRequest()
+const editorToken = ref(null)
 const formRef = ref()
 
 const emptyForm = () => ({
@@ -129,7 +145,9 @@ const rules = {
 }
 
 async function loadData() {
+  const requestId = listGate.begin()
   loading.value = true
+  listError.value = ''
   try {
     const result = await projectApi.page({
       keyword: filters.keyword || undefined,
@@ -137,13 +155,22 @@ async function loadData() {
       pageNum: pageNum.value,
       pageSize: pageSize.value
     })
+    if (!listGate.isCurrent(requestId)) return
     rows.value = result.list || []
     total.value = result.total || 0
   } catch (error) {
-    ElMessage.error(error.message)
+    if (!listGate.isCurrent(requestId)) return
+    rows.value = []
+    total.value = 0
+    listError.value = error.message || '网络异常，请重试'
   } finally {
-    loading.value = false
+    if (listGate.isCurrent(requestId)) loading.value = false
   }
+}
+
+function goVersions(row) {
+  const target = contextLink('versions', 'projectId', row?.id)
+  if (target) router.push(target)
 }
 
 function search() {
@@ -157,14 +184,25 @@ function resetFilters() {
   search()
 }
 
+function invalidateEditor() {
+  editorGate.invalidate()
+  editorToken.value = null
+}
 function openCreate() {
+  if (saving.value) return
+  editorToken.value = editorGate.begin()
   editing.value = false
+  editingId.value = null
   Object.assign(form, emptyForm())
   dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 function openEdit(row) {
+  if (saving.value || !Number.isSafeInteger(Number(row?.id)) || Number(row.id) <= 0) return
+  editorToken.value = editorGate.begin()
   editing.value = true
+  editingId.value = Number(row.id)
   Object.assign(form, {
     projectCode: row.projectCode,
     projectName: row.projectName,
@@ -174,27 +212,33 @@ function openEdit(row) {
     description: row.description || ''
   })
   dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 async function save() {
-  if (!formRef.value) return
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) return
+  if (saving.value || !formRef.value || !dialogVisible.value) return
+  const session = editorToken.value
+  if (!session || !editorGate.isCurrent(session)) return
+  const wasEditing = editing.value
+  const targetId = editingId.value
+  // Lock immediately, including during async form validation, to avoid double submits.
   saving.value = true
   try {
-    const payload = { ...form }
-    if (editing.value) {
-      const current = rows.value.find(item => item.projectCode === form.projectCode)
-      await projectApi.update(current.id, payload)
-      ElMessage.success('项目更新成功')
-    } else {
-      await projectApi.create(payload)
-      ElMessage.success('项目创建成功')
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!valid || !dialogVisible.value || !editorGate.isCurrent(session)) return
+    if (wasEditing && (!Number.isSafeInteger(targetId) || targetId <= 0)) {
+      throw new Error('编辑目标已失效，请重新打开项目')
     }
-    dialogVisible.value = false
-    await loadData()
+    const payload = { ...form }
+    if (wasEditing) await projectApi.update(targetId, payload)
+    else await projectApi.create(payload)
+    if (editorGate.isCurrent(session)) {
+      ElMessage.success(wasEditing ? '项目更新成功' : '项目创建成功')
+      dialogVisible.value = false
+      await loadData()
+    }
   } catch (error) {
-    ElMessage.error(error.message)
+    if (editorGate.isCurrent(session)) ElMessage.error(error.message || '保存项目失败')
   } finally {
     saving.value = false
   }
@@ -210,4 +254,8 @@ function formatDate(value) {
 }
 
 onMounted(loadData)
+onUnmounted(() => {
+  listGate.invalidate()
+  editorGate.invalidate()
+})
 </script>

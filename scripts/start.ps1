@@ -1,3 +1,4 @@
+param([switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Port = 18090
@@ -21,7 +22,11 @@ if ($env:DPM_RUNNER_TOKEN.Length -lt 32) { throw 'Local Runner token file is inv
 $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
 if ($listener) { throw "Port $Port is already in use. Check the existing process before starting." }
 
-& (Join-Path $PSScriptRoot 'build.ps1')
+if (-not $SkipBuild) {
+    & (Join-Path $PSScriptRoot 'build.ps1')
+} else {
+    Write-Host 'Starting previously verified JAR without rebuilding.'
+}
 if (-not (Test-Path $Jar)) { throw "Application JAR not found: $Jar" }
 
 $Java = (Get-Command java -ErrorAction Stop).Source
@@ -46,6 +51,8 @@ if (-not $healthy) {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
     throw "Application did not become healthy. Check logs\application.stderr.log and logs\application.stdout.log."
 }
+# Explicit successful start re-enables watchdog recovery for this service.
+Remove-Item -LiteralPath (Join-Path $Root '.local\watchdog-application.paused') -Force -ErrorAction SilentlyContinue
 Write-Host "Application started. PID=$($process.Id)"
 Write-Host "Open: http://127.0.0.1:$Port"
 Write-Host 'Only the Spring Boot port is exposed.'

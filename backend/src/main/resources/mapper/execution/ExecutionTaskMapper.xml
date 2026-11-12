@@ -75,6 +75,56 @@
         <include refid="taskJoins"/>
         <include refid="taskFilter"/>
     </select>
+    <!-- Auditable metadata only: never SELECT request snapshots, credentials or event content. -->
+    <sql id="chatGptAuditFromFilter">
+        FROM dpm_execution_task t
+        INNER JOIN dpm_test_execution x ON x.id = (
+            SELECT x2.id FROM dpm_test_execution x2
+            WHERE x2.task_id = t.id ORDER BY x2.attempt_no DESC, x2.id DESC LIMIT 1
+        )
+        INNER JOIN dpm_test_cycle tc ON tc.id = t.cycle_id
+        INNER JOIN dpm_version v ON v.id = tc.version_id
+        INNER JOIN dpm_project p ON p.id = v.project_id
+        INNER JOIN dpm_cycle_case cc ON cc.id = t.cycle_case_id
+        <where>
+            AND t.task_type = 'EXECUTE_CASE' AND x.runner_type = 'CHATGPT'
+                AND x.execution_mode = 'AI'
+            <if test="status != null">AND t.task_status = #{status}</if>
+            <if test="result != null">AND x.result = #{result}</if>
+            <if test="keyword != null">
+                AND (t.task_no LIKE CONCAT('%', #{keyword}, '%')
+                     OR tc.cycle_name LIKE CONCAT('%', #{keyword}, '%')
+                     OR JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.caseNo'))
+                        LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+            <if test="recoveredOnly">
+                AND x.attempt_no &gt; 1
+                AND EXISTS (
+                    SELECT 1 FROM dpm_test_execution interrupted
+                    WHERE interrupted.task_id = t.id
+                      AND interrupted.execution_status = 'INTERRUPTED'
+                )
+            </if>
+        </where>
+    </sql>
+    <select id="selectChatGptAudit" resultType="map">
+        SELECT t.id AS taskId, t.task_no AS taskNo, t.task_status AS taskStatus,
+               t.cycle_id AS cycleId, tc.cycle_name AS cycleName,
+               p.project_name AS projectName,
+               JSON_UNQUOTE(JSON_EXTRACT(cc.case_snapshot, '$.caseNo')) AS caseNo,
+               x.id AS executionId, x.attempt_no AS attemptNo,
+               x.execution_status AS executionStatus, x.result,
+               CASE WHEN x.checkpoint_json IS NULL THEN 0 ELSE 1 END AS hasCheckpoint,
+               (SELECT COUNT(1) FROM dpm_execution_event ev WHERE ev.execution_id = x.id) AS eventCount,
+               t.created_at AS createdAt
+        <include refid="chatGptAuditFromFilter"/>
+        ORDER BY t.id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+    <select id="countChatGptAudit" resultType="long">
+        SELECT COUNT(1)
+        <include refid="chatGptAuditFromFilter"/>
+    </select>
     <select id="selectCycleForUpdate" resultType="map">
         SELECT tc.id, tc.status, tc.version_id AS versionId, tc.code_version AS codeVersion,
                tc.environment_id AS environmentId,
@@ -351,6 +401,14 @@
         UPDATE dpm_cycle_case
         SET execution_status = #{status},
             latest_result = COALESCE(#{result}, latest_result)
+        WHERE id = #{cycleCaseId}
+    </update>
+    <!-- Starting a NEW task invalidates the previous attempt's summary result.
+         Historical attempts remain intact in dpm_test_execution. This is separate
+         from ordinary status transitions and heartbeat/recovery updates. -->
+    <update id="resetCycleCaseForNewExecution">
+        UPDATE dpm_cycle_case
+        SET execution_status = 'PENDING', latest_result = 'NOT_RUN'
         WHERE id = #{cycleCaseId}
     </update>
     <!-- 调用方必须先锁定轮次行，再更新用例状态；此更新在同一事务内完成终态汇总。 -->
